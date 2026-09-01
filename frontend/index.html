@@ -34,6 +34,11 @@
 
     --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
     --shadow-md: 0 3px 10px rgba(45, 43, 43, .16);
+
+    --status-pass: #2f8f4e; --status-pass-bg: #e6f3ea;
+    --status-fail: #b03a2e; --status-fail-bg: #f8e9e7;
+    --status-error: #9a6a00; --status-error-bg: #f6efdd;
+    --status-pending: var(--color-neutral-600); --status-pending-bg: var(--color-neutral-200);
   }
 
   * { box-sizing: border-box; }
@@ -58,6 +63,9 @@
     letter-spacing: -.01em; text-transform: uppercase;
   }
   .label-sm { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-neutral-600); }
+  .backend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-neutral-400); flex: none; }
+  .backend-dot.up { background: var(--status-pass); }
+  .backend-dot.down { background: var(--color-neutral-400); }
 
   main { max-width: 1360px; margin: 0 auto; padding: var(--space-8); }
 
@@ -209,6 +217,42 @@
   }
   .note .sub { font-size: 12px; color: var(--color-neutral-700); }
 
+  .verify-section { margin-top: var(--space-8); border-top: 2px solid var(--color-divider); padding-top: var(--space-6); }
+  .verify-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-6); flex-wrap: wrap; margin-bottom: var(--space-4); }
+  .verify-head .headline-md { font-family: var(--font-heading); font-weight: 800; font-size: 18px; letter-spacing: -.01em; }
+  .verify-head .desc { font-size: 12.5px; color: var(--color-neutral-700); max-width: 60ch; margin-top: 4px; }
+  .btn-outline {
+    padding: 10px var(--space-4); background: transparent; color: var(--color-text);
+    border: 2px solid var(--color-text); font-family: var(--font-body); font-weight: 600;
+    font-size: 12px; letter-spacing: .06em; text-transform: uppercase; cursor: pointer;
+  }
+  .btn-outline:hover:not(:disabled) { background: var(--color-text); color: var(--color-neutral-100); }
+  .btn-outline:disabled { opacity: .4; cursor: not-allowed; }
+  .backend-hint { font-size: 12px; color: var(--color-neutral-600); margin-top: var(--space-2); }
+  .backend-hint code { font-family: var(--font-mono); }
+
+  .verify-list { display: flex; flex-direction: column; border: 2px solid var(--color-text); }
+  .verify-row {
+    display: grid; grid-template-columns: 96px 1fr 130px; gap: var(--space-4); align-items: center;
+    padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-neutral-300);
+  }
+  .verify-list .verify-row:last-child { border-bottom: none; }
+  .verify-row.skip { opacity: .55; }
+  .verify-row .plat { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+  .verify-row .u { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-neutral-700); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .verify-row .expect { font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-600); }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; font-size: 10.5px;
+    font-weight: 600; letter-spacing: .06em; text-transform: uppercase; justify-self: start;
+  }
+  .status-pill.pending { color: var(--status-pending); background: var(--status-pending-bg); }
+  .status-pill.running { color: var(--color-accent-700); background: var(--color-accent-100); }
+  .status-pill.pass { color: var(--status-pass); background: var(--status-pass-bg); }
+  .status-pill.fail { color: var(--status-fail); background: var(--status-fail-bg); }
+  .status-pill.error { color: var(--status-error); background: var(--status-error-bg); }
+  .status-pill.skip { color: var(--color-neutral-600); background: var(--color-neutral-200); }
+  .verify-observed { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-700); margin-top: -2px; }
+
   footer.bottom {
     margin-top: var(--space-8); border-top: 2px solid var(--color-divider); padding-top: var(--space-4);
     display: flex; justify-content: space-between; gap: var(--space-4); font-size: 11px;
@@ -223,9 +267,13 @@
 <header class="top">
   <div class="brand">
     <div class="name">Tag ID Extractor</div>
-    <div class="label-sm">v1 &nbsp;/&nbsp; client-side only</div>
+    <div class="label-sm">v1 &nbsp;/&nbsp; extraction is always client-side</div>
   </div>
-  <div class="label-sm"><a href="https://github.com/noodisD/ad-tag-verifier">ad-tag-verifier</a> &nbsp;/&nbsp; extraction step</div>
+  <div class="actions-row">
+    <span class="backend-dot" id="backendDot"></span>
+    <span class="label-sm" id="backendLabel">backend: checking…</span>
+    <span class="label-sm"><a href="https://github.com/noodisD/ad-tag-verifier">ad-tag-verifier</a></span>
+  </div>
 </header>
 
 <main>
@@ -357,6 +405,20 @@
         </div>
       </aside>
     </div>
+
+    <div class="verify-section">
+      <div class="verify-head">
+        <div>
+          <div class="headline-md">Verify</div>
+          <div class="desc">Loads each Adform/CM360 URL for real and checks whether its own ID actually fires. Ad Manager rows aren't self-referential, so they're listed but skipped.</div>
+        </div>
+        <div>
+          <button type="button" class="btn-outline" id="runVerify" disabled>Run verification</button>
+          <div class="backend-hint" id="backendHint"></div>
+        </div>
+      </div>
+      <div class="verify-list" id="verifyList"></div>
+    </div>
   </section>
 
   <footer class="bottom">
@@ -435,6 +497,8 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+const BACKEND_URL = "http://localhost:8877";
+
 const state = {
   mode: "paste",
   phase: "idle", // idle | parsing | empty | results
@@ -443,7 +507,16 @@ const state = {
   filter: "All",
   sourceLine: "",
   parseNote: "",
+  backend: "unknown", // unknown | checking | up | down
+  verify: {},          // gid -> {status, observed, expected}
+  verifying: false,
 };
+
+function fetchWithTimeout(url, opts, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, Object.assign({}, opts, { signal: ctrl.signal })).finally(() => clearTimeout(t));
+}
 
 function extract(units, sourceLine) {
   const rows = [], groups = [];
@@ -458,7 +531,20 @@ function extract(units, sourceLine) {
       const fields = fieldsOf(url, platform);
       if (!fields.length) return;
       counters[platform] = (counters[platform] || 0) + 1;
-      groups.push({ platform, label: platform + " " + counters[platform], primary: primaryOf(platform, fields), url });
+
+      const expected = {};
+      fields.forEach(([key, , value]) => {
+        if (platform === "Adform" && key === "bn") expected.bn = value;
+        if (platform === "CM360" && (key === "dc_trk_aid" || key === "dc_trk_cid")) expected[key] = value;
+      });
+      const verifiable = platform === "Adform" ? !!expected.bn
+        : platform === "CM360" ? !!(expected.dc_trk_aid && expected.dc_trk_cid)
+        : false;
+
+      groups.push({
+        gid: "g" + groups.length, platform, label: platform + " " + counters[platform],
+        primary: primaryOf(platform, fields), url, expected, verifiable
+      });
       fields.forEach(([, idType, value]) => {
         const key = platform + "|" + idType + "|" + value + "|" + unit.ref;
         if (seen.has(key)) return;
@@ -472,7 +558,10 @@ function extract(units, sourceLine) {
   state.filter = "All";
   state.sourceLine = sourceLine;
   state.phase = rows.length ? "results" : "empty";
+  state.verify = {};
+  state.verifying = false;
   render();
+  if (rows.length) checkBackend();
 }
 
 function runPaste() {
@@ -547,6 +636,104 @@ function writeClipboard(text) {
     try { document.execCommand("copy"); } catch (e) {}
     document.body.removeChild(t);
   }
+}
+
+function checkBackend() {
+  state.backend = "checking";
+  renderVerify();
+  fetchWithTimeout(BACKEND_URL + "/health", {}, 1500)
+    .then(r => { state.backend = r.ok ? "up" : "down"; })
+    .catch(() => { state.backend = "down"; })
+    .finally(renderVerify);
+}
+
+function runVerification() {
+  const targets = state.groups
+    .filter(g => g.verifiable)
+    .map(g => ({ id: g.gid, platform: g.platform, url: g.url, expected: g.expected }));
+  if (!targets.length || state.verifying) return;
+
+  state.verifying = true;
+  targets.forEach(t => { state.verify[t.id] = { status: "pending" }; });
+  renderVerify();
+
+  fetchWithTimeout(BACKEND_URL + "/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targets })
+  }, 5000)
+    .then(r => r.json())
+    .then(data => pollVerify(data.run_id))
+    .catch(() => {
+      state.verifying = false;
+      state.backend = "down";
+      renderVerify();
+    });
+}
+
+function pollVerify(runId) {
+  fetchWithTimeout(BACKEND_URL + "/verify/" + runId, {}, 5000)
+    .then(r => r.json())
+    .then(data => {
+      Object.assign(state.verify, data.results);
+      renderVerify();
+      if (data.done) {
+        state.verifying = false;
+        renderVerify();
+      } else {
+        setTimeout(() => pollVerify(runId), 800);
+      }
+    })
+    .catch(() => {
+      state.verifying = false;
+      renderVerify();
+    });
+}
+
+function renderVerify() {
+  if (state.phase !== "results") return;
+
+  const dot = document.getElementById("backendDot");
+  const label = document.getElementById("backendLabel");
+  dot.className = "backend-dot" + (state.backend === "up" ? " up" : state.backend === "down" ? " down" : "");
+  label.textContent = "backend: " + (state.backend === "up" ? "ready" : state.backend === "checking" ? "checking…" : state.backend === "down" ? "not running" : "unknown");
+
+  const verifiable = state.groups.filter(g => g.verifiable);
+  const runBtn = document.getElementById("runVerify");
+  runBtn.disabled = state.backend !== "up" || !verifiable.length || state.verifying;
+  runBtn.textContent = state.verifying ? "Verifying…" : "Run verification";
+
+  const hint = document.getElementById("backendHint");
+  hint.textContent = state.backend === "up" ? "" : "start it: cd backend && python app.py";
+
+  const list = document.getElementById("verifyList");
+  list.innerHTML = state.groups.map(g => {
+    if (!g.verifiable) {
+      return `
+        <div class="verify-row skip">
+          <span class="plat">${escapeHtml(g.platform)}</span>
+          <span class="u" title="${escapeHtml(g.url)}">${escapeHtml(g.url)}</span>
+          <span class="status-pill skip">not verifiable standalone</span>
+        </div>`;
+    }
+    const v = state.verify[g.gid] || { status: "idle" };
+    const pillClass = ["pending", "running", "pass", "fail", "error"].includes(v.status) ? v.status : "pending";
+    const pillText = v.status === "idle" ? "not run" : v.status;
+    const expectStr = Object.entries(g.expected).map(([k, val]) => k + "=" + val).join(" · ");
+    const observedRow = (v.status === "fail" || v.status === "pass") && v.observed
+      ? `<div class="verify-observed">observed: ${escapeHtml(Object.entries(v.observed).map(([k, arr]) => k + "=[" + arr.join(",") + "]").join(" · ") || "none")}${v.detail ? " — " + escapeHtml(v.detail) : ""}</div>`
+      : v.status === "error" && v.detail
+      ? `<div class="verify-observed">${escapeHtml(v.detail)}</div>`
+      : "";
+    return `
+      <div class="verify-row">
+        <span class="plat">${escapeHtml(g.platform)}</span>
+        <span class="u" title="${escapeHtml(g.url)}">${escapeHtml(g.url)}</span>
+        <span class="status-pill ${pillClass}" title="expected: ${escapeHtml(expectStr)}">${escapeHtml(pillText)}</span>
+      </div>
+      ${observedRow ? `<div class="verify-row" style="grid-template-columns: 1fr;">${observedRow}</div>` : ""}
+    `;
+  }).join("");
 }
 
 function setMode(mode) {
@@ -625,6 +812,7 @@ function renderResults() {
 function render() {
   renderPhase();
   renderResults();
+  renderVerify();
 }
 
 document.getElementById("tabPaste").addEventListener("click", () => setMode("paste"));
@@ -643,6 +831,8 @@ document.getElementById("dropzone").addEventListener("drop", (e) => {
   const file = e.dataTransfer.files && e.dataTransfer.files[0];
   if (file) onFile(file);
 });
+
+document.getElementById("runVerify").addEventListener("click", runVerification);
 
 document.getElementById("copyAll").addEventListener("click", (e) => {
   writeClipboard(pythonList("All"));

@@ -106,7 +106,10 @@ scripts/
   monitor_pudelek.py
   test_click_dv360.py
 frontend/
-  index.html        the extraction step below, as a standalone page
+  index.html        extraction UI + the optional Verify step, self-contained
+backend/
+  app.py            Flask API the frontend's Verify button calls
+  verifier.py        the actual Playwright check, generalized from scripts/
 ```
 
 ## Frontend — Tag ID Extractor
@@ -134,3 +137,26 @@ Google Ad Manager preview URLs (`iu`, `lineItemId`, `creativeId`,
 tuple shape every `verify_*.py` script already expects, one click away on the
 clipboard. Nothing is uploaded anywhere; parsing runs entirely in the
 browser tab.
+
+## Backend — live verification
+
+Extraction never needs a server. But once you have a `bn=` or
+`dc_trk_aid`/`dc_trk_cid` pulled out of a URL, the natural next question is
+whether it actually fires — and that does need a real browser hitting a real
+page, which a static HTML file can't do on its own. `backend/` is a small
+Flask API for exactly that: the frontend's "Verify" button, when the backend
+is running locally, re-runs the same consent-handling + DOM/network-scan
+technique as the scripts, live, and streams pass/fail back into the table.
+
+```bash
+cd backend
+pip install -r requirements.txt
+playwright install chromium
+python app.py                    # http://localhost:8877
+```
+
+Then open `frontend/index.html` as before — the backend status dot in the
+header switches from "not running" to "ready" once it detects the API, and
+the Verify button lights up. Full detail, including why only Adform/CM360
+rows are checkable and how the check avoids trivially confirming its own
+input, is in `backend/README.md`.
