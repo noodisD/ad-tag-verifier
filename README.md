@@ -158,14 +158,20 @@ Extraction never needs a server. But once you have a `bn=` or
 `dc_trk_aid`/`dc_trk_cid` pulled out of a URL, the natural next question is
 whether it actually fires — and that does need a real browser hitting a real
 page, which a static HTML file can't do on its own. `backend/` is a small
-Flask API for exactly that, and the frontend puts it behind two buttons, one
-per verification shape:
+Flask API for exactly that, and the frontend shows exactly one verification
+action at a time, chosen by what you've actually fed it — not two competing
+buttons:
 
-- **Verify** — Adform/CM360 tag URLs check themselves: load the URL, confirm
-  its own ID fires somewhere beyond the request that already contained it.
-- **Verify matched targets** — the cross-referenced preview URLs from above:
-  load *that* URL, but check for the ID the trafficking sheet said should be
-  there, since the preview URL itself never carried one.
+- **No test-URL email pasted yet** — "Verify" self-checks every Adform/CM360
+  tag URL against its own ID: load it, confirm the ID fires somewhere beyond
+  the request that already contained it.
+- **A test-URL email is in the session** — self-check disappears, replaced
+  by "Verify N of M test targets": one check per pasted preview URL that
+  matched a sheet row, checking *that* page for the ID the sheet said should
+  be there. The count is bounded by how many test URLs you pasted, not by
+  how many rows are in the sheet — verifying a trafficking sheet's every tag
+  against itself isn't the useful question once you have real pages to test
+  against instead.
 
 Both hit the same backend endpoint, running the same consent-handling +
 DOM/network-scan technique the scripts use, live, streaming pass/fail back

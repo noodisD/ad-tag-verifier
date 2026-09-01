@@ -407,7 +407,7 @@
       </aside>
     </div>
 
-    <div class="verify-section">
+    <div class="verify-section" id="selfCheckSection">
       <div class="verify-head">
         <div>
           <div class="headline-md">Verify</div>
@@ -424,8 +424,8 @@
     <div class="verify-section" id="crossRefSection" hidden>
       <div class="verify-head">
         <div>
-          <div class="headline-md">Test targets</div>
-          <div class="desc">Bare creative-preview URLs — no tag of their own, matched by size + variant against the tags extracted above. Upload the trafficking sheet and paste the test-URL email in either order; both feed this.</div>
+          <div class="headline-md">Verify test targets</div>
+          <div class="desc">The URLs from your pasted email, matched by size + variant against the uploaded sheet's tags. One check per test URL that has a match — not one per sheet row.</div>
         </div>
         <div>
           <button type="button" class="btn-outline" id="runCrossCheck" disabled>Verify matched targets</button>
@@ -805,6 +805,12 @@ function renderVerify() {
   dot.className = "backend-dot" + (state.backend === "up" ? " up" : state.backend === "down" ? " down" : "");
   label.textContent = "backend: " + (state.backend === "up" ? "ready" : state.backend === "checking" ? "checking…" : state.backend === "down" ? "not running" : "unknown");
 
+  // Once there are test-URL targets to check against, self-checking every
+  // sheet tag against its own URL isn't the useful question anymore — it's
+  // noise that buries the one action that matters (verify test targets).
+  document.getElementById("selfCheckSection").hidden = state.testTargets.length > 0;
+  if (state.testTargets.length > 0) return;
+
   const verifiable = state.groups.filter(g => g.verifiable);
   const runBtn = document.getElementById("runVerify");
   runBtn.disabled = state.backend !== "up" || !verifiable.length || state.verifying;
@@ -889,7 +895,7 @@ function renderCrossRef() {
 
   const btn = document.getElementById("runCrossCheck");
   btn.disabled = state.backend !== "up" || !matched.length || state.verifying;
-  btn.textContent = state.verifying ? "Verifying…" : "Verify matched targets (" + matched.length + ")";
+  btn.textContent = state.verifying ? "Verifying…" : "Verify " + matched.length + " of " + matches.length + " test targets";
 
   document.getElementById("crossRefList").innerHTML = matches.map(m => {
     if (!m.tag) {
