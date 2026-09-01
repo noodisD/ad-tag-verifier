@@ -1,0 +1,108 @@
+# ad-tag-verifier
+
+Browser-automation scripts that answer a question ad operations normally
+answers by hand: *is the right creative actually serving on a publisher page,
+and does the click actually track?*
+
+72 scripts, ~11,300 lines of Python, built up over several months verifying
+Adform and Google CM360/DV360 tag delivery across ~20 Polish publisher
+properties (Gazeta.pl, Agora, Interia, WP, Eska, Mamadu, NTO, ZPR, RASP,
+PushAd and others) on behalf of advertisers spanning retail, banking and fuel
+retail — referred to below by sector rather than name.
+
+## What it does
+
+Each script loads a live campaign preview URL in a real browser (Playwright),
+clears the site's consent wall, waits out lazy-loaded ad slots, then scans
+**every frame's full DOM plus the network layer** for impression beacons
+(Adform `bn=`, CM360/DoubleClick creative and click-tracking requests) and
+reports a pass/fail verdict per placement — separating the campaign's own
+creative pixels from unrelated article-level ad noise.
+
+Recurring techniques across the suite:
+
+- **Consent handling**, layered: a JS pass matching Polish accept-button
+  phrasing (`Akceptuję`, `Akceptuj wszystkie`) with CSS-selector fallbacks for
+  common CMPs (OneTrust and friends) underneath.
+- **Cross-frame DOM scanning** — the ad slot rendering the beacon is very
+  often not the top-level frame, so verification walks `page.frames` rather
+  than trusting the outer document.
+- **Network interception** (57 of the scripts) — hooking `page.on("request")`
+  to catch beacons that never leave a DOM trace, with per-request timestamps
+  relative to page load.
+- **Mobile emulation** (26 scripts) — viewport, device scale and touch, to
+  catch desktop/mobile serving differences.
+- **Spreadsheet-driven bulk runs** (9 scripts) — reading placement lists
+  straight off a campaign trafficking sheet with pandas instead of a
+  hand-maintained URL list.
+
+## On the redacted IDs and client names
+
+This is real client-campaign tooling, made public after the fact. Every
+Adform `bn=` value, Google `iu=` placement ID, DFP `lineItemId`, and
+`creativeId` in these scripts has been replaced with a placeholder number —
+those values are campaign-specific and were only ever meaningful for the
+specific run that produced them; they carry no signal once the campaign has
+ended. Nothing about *how the verification works* depended on redacting them.
+
+Advertiser names have been replaced with generic sector labels
+(`RetailClient`, `BankClient`, `FuelClient`) in filenames, comments and URL
+fragments, and local absolute paths (usernames, employer, Downloads
+filenames carrying internal job codes) have been replaced with relative
+placeholder paths. A couple of scripts (`verify_bts2026*.py`) embed the
+client's macro-generated `wfName=` tracking string verbatim inside a
+publisher tag URL — those substrings were substituted in place rather than
+removed, since removing them would have broken the URL's structure.
+
+Publisher domains and site structure are left as-is — that's public
+information, not client-confidential, and it's the part that actually shows
+what the tooling handles (Polish news/portal consent flows, ad-slot lazy
+loading, iframe nesting).
+
+To point a script at a real campaign, replace the placeholder IDs in its
+`URLS` (or equivalent) list at the top of the file with the actual preview
+URL and expected `bn=`/creative ID for that placement.
+
+## Why this many scripts
+
+This is a working toolkit accumulated script-by-script against real,
+time-boxed verification requests — not a framework designed up front. That
+shows in the duplication: consent-handling and DOM-scanning logic is
+re-derived per script rather than factored into a shared module. Left as-is
+deliberately, because it's an honest artifact of how the work actually
+happened, not a retrofit.
+
+## Requirements
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+## Running a script
+
+```bash
+python scripts/verify_gazeta_final.py
+```
+
+Each script edits the placement list at its own top, then writes a
+timestamped log to a `.txt` file alongside itself (see the `Tee` class near
+the top of most scripts) as well as stdout.
+
+The pandas-driven scripts (`check_abt_zpr_agora.py`, `read_agora_tags.py`,
+`read_cyber_tags.py`, `read_hvp_tags.py`, `read_retailclient_tags.py`,
+`read_zpr_all.py`) read a trafficking-sheet export from `./data/` — that path
+is a placeholder; point it at your own exported `.xlsx`/`.xls`.
+
+## Layout
+
+```
+scripts/
+  verify_*.py       per-publisher / per-campaign verification runs
+  check_*.py        one-off checks (ad dimensions, click counts)
+  diag_*.py         diagnostic scripts — dump every request matching a pattern
+  read_*.py         tag readers — extract IDs from a live page or tag snippet
+  retest_*.py       targeted re-runs against previously failed placements
+  monitor_pudelek.py
+  test_click_dv360.py
+```
