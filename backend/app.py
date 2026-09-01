@@ -17,7 +17,7 @@ import uuid
 from flask import Flask, jsonify, request
 from playwright.sync_api import sync_playwright
 
-from verifier import verify_target
+from verifier import discover_target, verify_target
 
 app = Flask(__name__)
 RUNS = {}
@@ -55,7 +55,8 @@ def start_verify():
     def worker():
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(
+                    headless=True, args=["--disable-blink-features=AutomationControlled"])
                 for t in targets:
                     RUNS[run_id]["results"][t["id"]] = {"status": "running"}
                     try:
@@ -73,6 +74,56 @@ def start_verify():
 
 @app.route("/verify/<run_id>", methods=["GET"])
 def get_progress(run_id):
+    run = RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "unknown run_id"}), 404
+    return jsonify(run)
+
+
+@app.route("/discover", methods=["POST", "OPTIONS"])
+def start_discover():
+    """Scan test pages for whatever ad tags they actually run.
+
+    Same background-thread + polling shape as /verify, but no expected
+    values go in: this is the step that happens *before* there is anything
+    to compare against.
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    targets = (request.get_json(silent=True) or {}).get("targets", [])
+    targets = [t for t in targets if t.get("id") and t.get("url")]
+    if not targets:
+        return jsonify({"error": "no targets"}), 400
+
+    run_id = uuid.uuid4().hex[:12]
+    RUNS[run_id] = {
+        "done": False,
+        "results": {t["id"]: {"status": "pending"} for t in targets},
+    }
+
+    def worker():
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True, args=["--disable-blink-features=AutomationControlled"])
+                for t in targets:
+                    RUNS[run_id]["results"][t["id"]] = {"status": "running"}
+                    try:
+                        result = discover_target(browser, t["url"])
+                    except Exception as e:
+                        result = {"status": "error", "detail": str(e)[:200]}
+                    RUNS[run_id]["results"][t["id"]] = result
+                browser.close()
+        finally:
+            RUNS[run_id]["done"] = True
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"run_id": run_id})
+
+
+@app.route("/discover/<run_id>", methods=["GET"])
+def get_discover_progress(run_id):
     run = RUNS.get(run_id)
     if not run:
         return jsonify({"error": "unknown run_id"}), 404

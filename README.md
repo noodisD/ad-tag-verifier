@@ -106,10 +106,10 @@ scripts/
   monitor_pudelek.py
   test_click_dv360.py
 frontend/
-  index.html        extraction UI + the optional Verify step, self-contained
+  index.html        extraction UI + scan/select/match flow, self-contained
 backend/
-  app.py            Flask API the frontend's Verify button calls
-  verifier.py        the actual Playwright check, generalized from scripts/
+  app.py            Flask API: /discover (scan pages), /verify (self-check)
+  verifier.py       the Playwright scan + check, generalized from scripts/
 ```
 
 ## Frontend — Tag ID Extractor
@@ -140,42 +140,41 @@ browser tab.
 
 **A trafficking sheet and a pasted email combine, they don't replace each
 other.** Upload the sheet, then paste the email (or the other order) — both
-actions add to the same session instead of one wiping out the other. This
-matters because they're usually two different things: the sheet is the
-source of truth for what a tag's ID *should* be; a pasted "please QA these"
-email is often a list of bare creative-preview links with no ID of their own
-at all — `.../120x600_faul/`, not a `bn=`-carrying tag URL. The extractor
-recognizes that shape too, and cross-references it: it parses `{size,
-variant}` out of both the preview URL's path and the sheet's line-item /
-creative name (whichever convention the sheet uses), and where they match,
-the sheet's ID becomes the expected value to verify *against that preview
-page* — not against the sheet's own tag URL. See "Verify" below for what
-happens once a match is found.
+actions add to the same session. They're two different things: the sheet is
+what a tag *should* be, and the email is a list of pages where it should
+have been implemented. Those pages are usually bare preview links with no
+tag ID of their own (`.../120x600_faul/`, or a publisher URL carrying the
+creative name in a query param), so the extractor recognizes that shape too
+and parses `{size, variant}` out of it.
 
-## Backend — live verification
+## Backend — scanning live pages
 
-Extraction never needs a server. But once you have a `bn=` or
-`dc_trk_aid`/`dc_trk_cid` pulled out of a URL, the natural next question is
-whether it actually fires — and that does need a real browser hitting a real
-page, which a static HTML file can't do on its own. `backend/` is a small
-Flask API for exactly that, and the frontend shows exactly one verification
-action at a time, chosen by what you've actually fed it — not two competing
-buttons:
+Extraction never needs a server. Checking whether a tag is *actually
+implemented* does: that means opening the page in a real browser, getting
+past the consent wall, and watching what fires. `backend/` is a small Flask
+API for that, and the frontend drives it in three steps:
 
-- **No test-URL email pasted yet** — "Verify" self-checks every Adform/CM360
-  tag URL against its own ID: load it, confirm the ID fires somewhere beyond
-  the request that already contained it.
-- **A test-URL email is in the session** — self-check disappears, replaced
-  by "Verify N of M test targets": one check per pasted preview URL that
-  matched a sheet row, checking *that* page for the ID the sheet said should
-  be there. The count is bounded by how many test URLs you pasted, not by
-  how many rows are in the sheet — verifying a trafficking sheet's every tag
-  against itself isn't the useful question once you have real pages to test
-  against instead.
+**1 · Scan test pages.** Every test URL is opened for real and every ad tag
+that fires is recorded — Adform, CM360, ABT Shield, DoubleVerify. Nothing is
+compared at this stage and no expected value is sent; the page is simply the
+source of truth for what is there. One scan per test URL, so the run is
+bounded by how many tests you pasted, not by how many rows the sheet has.
 
-Both hit the same backend endpoint, running the same consent-handling +
-DOM/network-scan technique the scripts use, live, streaming pass/fail back
-into the page as each one finishes.
+**2 · Pick which tags matter.** The vendors actually seen across the scanned
+pages become the filter — Adform and CM360 are the serving tags and are
+selected by default; ABT Shield and DoubleVerify ride alongside as
+measurement vendors and are opt-in, since not every campaign carries them.
+
+**3 · Match against the sheet.** Only now is the trafficking sheet consulted:
+each discovered ID is looked up in it. A selected vendor that never fired is
+flagged `missing`; an ID that fired but isn't in the sheet is `not in sheet`;
+and an ID that *is* in the sheet but under a row naming a different creative
+is called out explicitly — that's the right slot running the wrong tag, which
+is the failure this is really for.
+
+Because discovery runs before any comparison, the tool reports what the page
+does even with no sheet uploaded at all — the sheet only changes the verdict,
+not the finding.
 
 ```bash
 cd backend

@@ -17,8 +17,47 @@ item actually serves, which isn't knowable from the URL alone.
 import re
 import time
 
-CONSENT_PHRASES = ["Akceptuję", "Akceptuj wszystkie", "Akceptuj", "Zgadzam się", "Accept all"]
-CONSENT_SELECTORS = ["#onetrust-accept-btn-handler", "[class*='accept']", "button.sp_choice_type_11"]
+# Publishers gate ad delivery on looking like a real browser; the default
+# headless UA gets a page that loads but serves no ads.
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+# Longest / most specific first: WP.pl's "accept and continue" has to win
+# over a bare "akceptuję" prefix match.
+CONSENT_PHRASES = [
+    "akceptuję i przechodzę do serwisu",
+    "akceptuj wszystkie i przejdź",
+    "akceptuję wszystkie",
+    "akceptuj wszystkie",
+    "zgadzam się",
+    "accept all",
+    "akceptuję",
+    "akceptuj",
+]
+CONSENT_SELECTORS = [
+    "#didomi-notice-agree-button",
+    "#onetrust-accept-btn-handler",
+    "[data-st='gdpr-accept']",
+    ".rodo-popup-agree",
+    "button.sp_choice_type_11",
+    "button[class*='accept']",
+]
+
+# Matching runs in the page so it can normalize whitespace first: these
+# labels carry non-breaking spaces ("AKCEPTUJĘ I PRZECHODZĘ DO SERWISU"),
+# which a literal Playwright text selector never matches.
+_CONSENT_JS = """(phrases) => {
+    const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const els = document.querySelectorAll(
+        "button, a[role=button], div[role=button], [class*=accept], [id*=accept]");
+    for (const p of phrases) {
+        for (const b of els) {
+            const t = norm(b.innerText);
+            if (t === p || t.startsWith(p)) { b.click(); return b.innerText.trim(); }
+        }
+    }
+    return null;
+}"""
 
 PATTERNS = {
     "Adform": {"bn": re.compile(r"bn=(\d+)")},
@@ -29,29 +68,33 @@ PATTERNS = {
 }
 
 
-def click_consent(page):
-    try:
-        clicked = page.evaluate(
-            """(phrases) => {
-                for (const b of document.querySelectorAll('button')) {
-                    const t = b.innerText.trim();
-                    if (phrases.some(p => t === p || t.startsWith(p))) { b.click(); return t; }
-                }
-                return null;
-            }""",
-            CONSENT_PHRASES,
-        )
-        if clicked:
-            return True
-    except Exception:
-        pass
-    for sel in CONSENT_SELECTORS:
+def click_consent(page, settle=3.0):
+    """Dismiss the consent wall, on the page itself or inside a CMP iframe.
+
+    The wall is script-rendered after load, so this waits before looking:
+    checking straight after `goto` reliably finds nothing, and the page is
+    then left in a state where no ad tag ever fires — which reads as "no
+    tags implemented" rather than "we never got past the consent screen".
+    """
+    time.sleep(settle)
+    for target in [page] + list(page.frames):
         try:
-            if page.locator(sel).first.is_visible(timeout=800):
-                page.locator(sel).first.click()
+            clicked = target.evaluate(_CONSENT_JS, CONSENT_PHRASES)
+            if clicked:
+                time.sleep(2)
                 return True
         except Exception:
             pass
+    for target in [page] + list(page.frames):
+        for sel in CONSENT_SELECTORS:
+            try:
+                btn = target.locator(sel).first
+                if btn.is_visible(timeout=400):
+                    btn.click()
+                    time.sleep(2)
+                    return True
+            except Exception:
+                pass
     return False
 
 
@@ -67,6 +110,111 @@ def deep_dom_scan(page, patterns):
             for m in rx.finditer(html):
                 found[k].add(m.group(1))
     return found
+
+
+# ── Vendor discovery ─────────────────────────────────────────────────────
+#
+# What a live page can actually be asked: "which ad tags fired here?" — with
+# no expected value supplied. Adform and CM360 are the serving tags; ABT
+# Shield and DoubleVerify are measurement/verification vendors that ride
+# alongside them. All four are recorded the same way, and which ones matter
+# is a decision made later, on the client.
+
+VENDOR_PATTERNS = {
+    "Adform": {
+        "domain": "adform.net",
+        "fields": {"bn": re.compile(r"[?&;]bn=(\d+)")},
+    },
+    "CM360": {
+        "domain": "doubleclick.net/ddm/track",
+        "fields": {
+            "dc_trk_aid": re.compile(r"dc_trk_aid=(\d+)"),
+            "dc_trk_cid": re.compile(r"dc_trk_cid=(\d+)"),
+            "site_placement": re.compile(r"ddm/track\w*/(N[\w.]+)/(B[\d.]+)"),
+        },
+    },
+    "ABT Shield": {
+        "domain": "abtshield.com",
+        "fields": {
+            "o": re.compile(r"[?&]o=(\d+)"),
+            "sid": re.compile(r"[?&]sid=([^&\s\"']+)"),
+        },
+    },
+    "DoubleVerify": {
+        # Config params ride in the fragment on the bootstrap script
+        # (dvbm.js#cmp=…&plc=…) and in the query string on the visit/event
+        # calls, so every separator class here has to include "#".
+        "domain": "doubleverify.com",
+        "fields": {
+            "cmp": re.compile(r"[?&#]cmp=(\d+)"),
+            "plc": re.compile(r"[?&#]plc=(\d+)"),
+            "advid": re.compile(r"[?&#]advid=(\d+)"),
+            "sid": re.compile(r"[?&#]sid=(\d+)"),
+        },
+    },
+}
+
+URL_IN_TEXT = re.compile(r"https?://[^\s\"'<>()\\]+")
+
+
+def discover_target(browser, url, timeout_s=30):
+    """Open a test page and record every ad tag that actually fires on it.
+
+    Discovery, not verification: nothing is compared against an expected
+    value here, because at this stage there isn't one — the page is the
+    source of truth for what is actually implemented. Comparing that against
+    a trafficking sheet is a separate step that happens afterwards.
+    """
+    hits = {}
+
+    def record(u):
+        low = u.lower()
+        for vendor, spec in VENDOR_PATTERNS.items():
+            if spec["domain"] not in low:
+                continue
+            bucket = hits.setdefault(vendor, {})
+            for field, rx in spec["fields"].items():
+                for m in rx.finditer(u):
+                    bucket.setdefault(field, set()).add("/".join(g for g in m.groups() if g))
+
+    ctx = browser.new_context(viewport={"width": 1280, "height": 900}, locale="pl-PL", user_agent=UA)
+    page = ctx.new_page()
+    page.on("request", lambda req: record(req.url))
+
+    status_code = None
+    try:
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+        status_code = resp.status if resp else None
+        click_consent(page)
+        time.sleep(2)
+        for _ in range(5):
+            try:
+                page.evaluate("window.scrollBy(0, 400)")
+            except Exception:
+                pass
+            time.sleep(1.2)
+        time.sleep(1)
+        # Network capture catches most beacons, but a tag that is written
+        # into the markup and never requested (or fired inside a frame that
+        # finished before the listener attached) only shows up in the DOM.
+        for frame in page.frames:
+            try:
+                html = frame.content()
+            except Exception:
+                continue
+            for m in URL_IN_TEXT.finditer(html):
+                record(m.group(0))
+    except Exception as e:
+        ctx.close()
+        return {"status": "error", "detail": str(e)[:200]}
+
+    ctx.close()
+    vendors = {v: {f: sorted(vals) for f, vals in fields.items()} for v, fields in hits.items()}
+    return {
+        "status": "done" if vendors else "none",
+        "vendors": vendors,
+        "http_status": status_code,
+    }
 
 
 def verify_target(browser, target, timeout_s=25):
@@ -99,7 +247,7 @@ def verify_target(browser, target, timeout_s=25):
             if m:
                 network_hits[k].add(m.group(1))
 
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900}, locale="pl-PL")
+    ctx = browser.new_context(viewport={"width": 1280, "height": 900}, locale="pl-PL", user_agent=UA)
     page = ctx.new_page()
     page.on("request", on_request)
 

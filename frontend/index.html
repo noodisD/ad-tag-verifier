@@ -253,6 +253,37 @@
   .status-pill.skip { color: var(--color-neutral-600); background: var(--color-neutral-200); }
   .verify-observed { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-700); margin-top: -2px; }
 
+  .vendor-picker { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .vendor-chip {
+    display: inline-flex; align-items: center; gap: var(--space-2);
+    padding: 8px var(--space-3); border: 2px solid var(--color-neutral-400);
+    background: transparent; cursor: pointer; font-family: var(--font-body);
+    font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--color-neutral-700);
+  }
+  .vendor-chip:hover { border-color: var(--color-text); color: var(--color-text); }
+  .vendor-chip.on { border-color: var(--color-text); background: var(--color-text); color: var(--color-neutral-100); }
+  .vendor-chip .box {
+    width: 12px; height: 12px; border: 2px solid currentColor; flex: none;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 9px; line-height: 1;
+  }
+  .vendor-chip .role { font-weight: 400; letter-spacing: .04em; opacity: .7; text-transform: none; }
+  .vendor-chip .n { font-family: var(--font-mono); opacity: .75; }
+
+  .scan-row { display: grid; grid-template-columns: 150px 1fr 130px; gap: var(--space-4); align-items: center;
+    padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-neutral-300); }
+  .verify-list .scan-row:last-child { border-bottom: none; }
+  .scan-row .found { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip-found {
+    font-family: var(--font-mono); font-size: 10.5px; padding: 2px 7px;
+    background: var(--color-neutral-200); color: var(--color-neutral-800);
+  }
+  .chip-found.main { background: var(--color-accent-100); color: var(--color-accent-700); }
+  .match-detail { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 11px;
+    color: var(--color-neutral-700); padding-left: var(--space-3); }
+  .match-detail .ok { color: var(--status-pass); }
+  .match-detail .bad { color: var(--status-fail); }
+
   footer.bottom {
     margin-top: var(--space-8); border-top: 2px solid var(--color-divider); padding-top: var(--space-4);
     display: flex; justify-content: space-between; gap: var(--space-4); font-size: 11px;
@@ -421,17 +452,38 @@
       <div class="verify-list" id="verifyList"></div>
     </div>
 
-    <div class="verify-section" id="crossRefSection" hidden>
+    <div class="verify-section" id="scanSection" hidden>
       <div class="verify-head">
         <div>
-          <div class="headline-md">Verify test targets</div>
-          <div class="desc">The URLs from your pasted email, matched by size + variant against the uploaded sheet's tags. One check per test URL that has a match — not one per sheet row.</div>
+          <div class="headline-md">1 &nbsp;·&nbsp; Scan test pages</div>
+          <div class="desc">Opens each test URL in a real browser and records every ad tag that actually fires there. Nothing is compared yet — this is what <em>is</em> implemented, read off the live page.</div>
         </div>
         <div>
-          <button type="button" class="btn-outline" id="runCrossCheck" disabled>Verify matched targets</button>
+          <button type="button" class="btn-outline" id="runScan" disabled>Scan test pages</button>
+          <div class="backend-hint" id="scanHint"></div>
         </div>
       </div>
-      <div class="verify-list" id="crossRefList"></div>
+      <div class="verify-list" id="scanList"></div>
+    </div>
+
+    <div class="verify-section" id="vendorSection" hidden>
+      <div class="verify-head">
+        <div>
+          <div class="headline-md">2 &nbsp;·&nbsp; Which tags to check</div>
+          <div class="desc">Adform and CM360 are the serving tags; ABT Shield and DoubleVerify ride alongside as measurement vendors. Pick what this campaign is supposed to carry.</div>
+        </div>
+      </div>
+      <div class="vendor-picker" id="vendorPicker"></div>
+    </div>
+
+    <div class="verify-section" id="matchSection" hidden>
+      <div class="verify-head">
+        <div>
+          <div class="headline-md">3 &nbsp;·&nbsp; Match against the sheet</div>
+          <div class="desc" id="matchDesc">Compares the IDs found on each page against the uploaded trafficking sheet.</div>
+        </div>
+      </div>
+      <div class="verify-list" id="matchList"></div>
     </div>
   </section>
 
@@ -470,13 +522,33 @@ function clean(u) {
   return u.replace(/&amp;/g, "&").replace(/&#0?38;/g, "&").replace(/[;,.)\]]+$/, "");
 }
 function param(u, k) {
-  const m = u.match(new RegExp("[?&;]" + k + "=([^&;\\s\"']+)", "i"));
+  // "#" is a separator too: DoubleVerify's bootstrap script passes its
+  // whole config in the fragment (dvbm.js#cmp=…&plc=…).
+  const m = u.match(new RegExp("[?&;#]" + k + "=([^&;#\\s\"']+)", "i"));
   return m ? m[1] : null;
 }
+// Serving tags carry the ID a campaign is booked against; measurement
+// vendors ride alongside and are matched separately (and are often absent
+// from the trafficking sheet entirely).
+const MAIN_VENDORS = ["Adform", "CM360"];
+const VENDOR_ROLE = {
+  "Adform": "serving", "CM360": "serving",
+  "ABT Shield": "measurement", "DoubleVerify": "measurement",
+};
+// Which discovered field carries the identity worth matching per vendor.
+const MATCH_FIELDS = {
+  "Adform": ["bn"],
+  "CM360": ["dc_trk_aid", "dc_trk_cid"],
+  "ABT Shield": ["o"],
+  "DoubleVerify": ["plc"],
+};
+
 function platformOf(u) {
   const l = u.toLowerCase();
   if (l.includes("adform")) return "Adform";
   if (l.includes("doubleclick.net/ddm/track")) return "CM360";
+  if (l.includes("abtshield.com")) return "ABT Shield";
+  if (l.includes("doubleverify.com")) return "DoubleVerify";
   if (/[?&]gdfp_req=/.test(l) || (/[?&]iu=/.test(l) && l.includes("google_preview"))) return "Ad Manager";
   return null;
 }
@@ -494,6 +566,18 @@ function fieldsOf(u, platform) {
     if (aid) out.push(["dc_trk_aid", "dc_trk_aid", aid]);
     if (cid) out.push(["dc_trk_cid", "dc_trk_cid", cid]);
     if (pair) out.push(["np", "site/placement", pair[1] + "/" + pair[2]]);
+  } else if (platform === "ABT Shield") {
+    [["o", "o (tag id)"], ["sid", "sid"]].forEach(([k, label]) => {
+      const v = param(u, k);
+      if (v) out.push([k, label, v]);
+    });
+  } else if (platform === "DoubleVerify") {
+    // dvbm.js carries its config in the fragment, the visit/event calls in
+    // the query string — param() has to look past "#" for both to work.
+    [["cmp", "cmp"], ["plc", "plc"], ["advid", "advid"], ["sid", "sid"]].forEach(([k, label]) => {
+      const v = param(u, k);
+      if (v) out.push([k, label, v]);
+    });
   } else if (platform === "Ad Manager") {
     [["iu", "iu"], ["lineItemId", "lineItemId"], ["creativeId", "creativeId"], ["gdfp_req", "gdfp_req"]].forEach(([k, label]) => {
       const v = param(u, k);
@@ -567,6 +651,10 @@ const state = {
   backend: "unknown", // unknown | checking | up | down
   verify: {},          // id (gN or tN) -> {status, observed, expected}
   verifying: false,
+  scan: {},            // tid -> {status, vendors:{vendor:{field:[values]}}}
+  scanning: false,
+  selectedVendors: new Set(),
+  vendorTouched: false, // once the user picks, stop auto-selecting
   _seenRows: new Set(),
   _seenTargets: new Set(),
 };
@@ -670,6 +758,8 @@ function extract(units, sourceLine) {
 function clearAll() {
   state.rows = []; state.groups = []; state.testTargets = []; state.sources = [];
   state.filter = "All"; state.verify = {}; state.verifying = false; state.phase = "idle";
+  state.scan = {}; state.scanning = false;
+  state.selectedVendors.clear(); state.vendorTouched = false;
   state._seenRows.clear(); state._seenTargets.clear();
   document.getElementById("pasteInput").value = "";
   render();
@@ -765,11 +855,11 @@ function writeClipboard(text) {
 function checkBackend() {
   state.backend = "checking";
   renderVerify();
-  renderCrossRef();
+  renderScan(); renderVendors(); renderMatch();
   fetchWithTimeout(BACKEND_URL + "/health", {}, 1500)
     .then(r => { state.backend = r.ok ? "up" : "down"; })
     .catch(() => { state.backend = "down"; })
-    .finally(() => { renderVerify(); renderCrossRef(); });
+    .finally(() => { renderVerify(); renderScan(); renderVendors(); renderMatch(); });
 }
 
 function runVerification() {
@@ -793,7 +883,6 @@ function runVerification() {
       state.verifying = false;
       state.backend = "down";
       renderVerify();
-      renderCrossRef();
     });
 }
 
@@ -803,11 +892,9 @@ function pollVerify(runId) {
     .then(data => {
       Object.assign(state.verify, data.results);
       renderVerify();
-      renderCrossRef();
       if (data.done) {
         state.verifying = false;
         renderVerify();
-        renderCrossRef();
       } else {
         setTimeout(() => pollVerify(runId), 800);
       }
@@ -815,7 +902,6 @@ function pollVerify(runId) {
     .catch(() => {
       state.verifying = false;
       renderVerify();
-      renderCrossRef();
     });
 }
 
@@ -871,80 +957,187 @@ function renderVerify() {
   }).join("");
 }
 
-// Every test target paired with the tag group (if any) whose own
-// size+variant name-hint matches it. A target with no match isn't an
-// error — it's telling you the sheet you uploaded doesn't cover that
-// creative, which is exactly the kind of gap this is meant to catch.
-function crossReference() {
-  return state.testTargets.map(t => {
-    const tag = state.groups.find(g => g.verifiable && g.nameHint
-      && g.nameHint.size === t.size && g.nameHint.variant === t.variant);
-    return Object.assign({}, t, { tag });
-  });
-}
+// ── Step 1: scan ────────────────────────────────────────────────────────
 
-function runCrossCheck() {
-  const matches = crossReference().filter(m => m.tag);
-  if (!matches.length || state.verifying) return;
+function runScan() {
+  const targets = state.testTargets.map(t => ({ id: t.tid, url: t.url }));
+  if (!targets.length || state.scanning) return;
 
-  const targets = matches.map(m => ({ id: m.tid, platform: m.tag.platform, url: m.url, expected: m.tag.expected }));
-  state.verifying = true;
-  targets.forEach(t => { state.verify[t.id] = { status: "pending" }; });
-  renderCrossRef();
+  state.scanning = true;
+  targets.forEach(t => { state.scan[t.id] = { status: "pending" }; });
+  renderScan();
 
-  fetchWithTimeout(BACKEND_URL + "/verify", {
+  fetchWithTimeout(BACKEND_URL + "/discover", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ targets })
   }, 5000)
     .then(r => r.json())
-    .then(data => pollVerify(data.run_id))
+    .then(data => pollScan(data.run_id))
     .catch(() => {
-      state.verifying = false;
+      state.scanning = false;
       state.backend = "down";
       render();
     });
 }
 
-function renderCrossRef() {
+function pollScan(runId) {
+  fetchWithTimeout(BACKEND_URL + "/discover/" + runId, {}, 5000)
+    .then(r => r.json())
+    .then(data => {
+      Object.assign(state.scan, data.results);
+      // A vendor is only offered as a choice once it has actually been seen
+      // on at least one page — the picker reflects this campaign, not a
+      // hardcoded vendor list.
+      if (!state.vendorTouched) {
+        discoveredVendors().forEach(v => {
+          if (MAIN_VENDORS.includes(v)) state.selectedVendors.add(v);
+        });
+      }
+      renderScan(); renderVendors(); renderMatch();
+      if (data.done) {
+        state.scanning = false;
+        renderScan(); renderVendors(); renderMatch();
+      } else {
+        setTimeout(() => pollScan(runId), 1000);
+      }
+    })
+    .catch(() => { state.scanning = false; render(); });
+}
+
+function discoveredVendors() {
+  const set = new Set();
+  Object.values(state.scan).forEach(r => {
+    Object.keys((r && r.vendors) || {}).forEach(v => set.add(v));
+  });
+  return Array.from(set).sort((a, b) =>
+    (MAIN_VENDORS.includes(b) ? 1 : 0) - (MAIN_VENDORS.includes(a) ? 1 : 0) || a.localeCompare(b));
+}
+
+function renderScan() {
   if (state.phase !== "results") return;
-  const section = document.getElementById("crossRefSection");
+  const section = document.getElementById("scanSection");
   section.hidden = !state.testTargets.length;
   if (!state.testTargets.length) return;
 
-  const matches = crossReference();
-  const matched = matches.filter(m => m.tag);
+  const btn = document.getElementById("runScan");
+  btn.disabled = state.backend !== "up" || state.scanning;
+  const done = Object.values(state.scan).filter(r => r.status === "done" || r.status === "none" || r.status === "error").length;
+  btn.textContent = state.scanning
+    ? "Scanning… " + done + "/" + state.testTargets.length
+    : (done ? "Re-scan " : "Scan ") + state.testTargets.length + " test page" + (state.testTargets.length === 1 ? "" : "s");
+  document.getElementById("scanHint").textContent =
+    state.backend === "up" ? "" : "start it: cd backend && python app.py";
 
-  const btn = document.getElementById("runCrossCheck");
-  btn.disabled = state.backend !== "up" || !matched.length || state.verifying;
-  btn.textContent = state.verifying ? "Verifying…" : "Verify " + matched.length + " of " + matches.length + " test targets";
-
-  document.getElementById("crossRefList").innerHTML = matches.map(m => {
-    if (!m.tag) {
-      return `
-        <div class="verify-row skip">
-          <span class="plat">${escapeHtml(m.size)}_${escapeHtml(m.variant)}</span>
-          <span class="u" title="${escapeHtml(m.url)}">${escapeHtml(m.url)}</span>
-          <span class="status-pill skip">no matching tag in uploaded data</span>
-        </div>`;
-    }
-    const v = state.verify[m.tid] || { status: "idle" };
-    const pillClass = ["pending", "running", "pass", "fail", "error"].includes(v.status) ? v.status : "pending";
-    const pillText = v.status === "idle" ? "not run" : v.status;
-    const expectStr = Object.entries(m.tag.expected).map(([k, val]) => k + "=" + val).join(" · ");
-    const observedRow = (v.status === "fail" || v.status === "pass") && v.observed
-      ? `<div class="verify-observed">expected from ${escapeHtml(m.tag.platform)} sheet: ${escapeHtml(expectStr)} — observed: ${escapeHtml(Object.entries(v.observed).map(([k, arr]) => k + "=[" + arr.join(",") + "]").join(" · ") || "none")}${v.detail ? " — " + escapeHtml(v.detail) : ""}</div>`
-      : v.status === "error" && v.detail
-      ? `<div class="verify-observed">${escapeHtml(v.detail)}</div>`
-      : "";
+  document.getElementById("scanList").innerHTML = state.testTargets.map(t => {
+    const r = state.scan[t.tid] || { status: "idle" };
+    const pill = { idle: "pending", pending: "pending", running: "running",
+                   done: "pass", none: "fail", error: "error" }[r.status] || "pending";
+    const text = { idle: "not scanned", pending: "queued", running: "loading page…",
+                   done: "tags found", none: "no tags fired", error: "error" }[r.status] || r.status;
+    const found = r.vendors ? Object.keys(r.vendors).map(v =>
+      `<span class="chip-found ${MAIN_VENDORS.includes(v) ? "main" : ""}">${escapeHtml(v)}</span>`).join("") : "";
+    const detail = r.status === "error" && r.detail
+      ? `<div class="match-detail">${escapeHtml(r.detail)}</div>` : "";
     return `
-      <div class="verify-row">
-        <span class="plat">${escapeHtml(m.size)}_${escapeHtml(m.variant)}</span>
-        <span class="u" title="${escapeHtml(m.url)}">${escapeHtml(m.url)}</span>
-        <span class="status-pill ${pillClass}" title="expected: ${escapeHtml(expectStr)}">${escapeHtml(pillText)}</span>
-      </div>
-      ${observedRow ? `<div class="verify-row" style="grid-template-columns: 1fr;">${observedRow}</div>` : ""}
-    `;
+      <div class="scan-row">
+        <span class="plat">${escapeHtml(t.size)}_${escapeHtml(t.variant)}</span>
+        <span class="found">${found || `<span class="u" title="${escapeHtml(t.url)}">${escapeHtml(t.url.slice(0, 90))}</span>`}</span>
+        <span class="status-pill ${pill}">${escapeHtml(text)}</span>
+        ${detail}
+      </div>`;
+  }).join("");
+}
+
+// ── Step 2: vendor selection ────────────────────────────────────────────
+
+function renderVendors() {
+  const vendors = discoveredVendors();
+  const section = document.getElementById("vendorSection");
+  section.hidden = !vendors.length;
+  if (!vendors.length) return;
+
+  document.getElementById("vendorPicker").innerHTML = vendors.map(v => {
+    const on = state.selectedVendors.has(v);
+    const n = Object.values(state.scan).filter(r => r.vendors && r.vendors[v]).length;
+    return `
+      <button type="button" class="vendor-chip ${on ? "on" : ""}" data-vendor="${escapeHtml(v)}">
+        <span class="box">${on ? "✓" : ""}</span>
+        <span>${escapeHtml(v)}</span>
+        <span class="role">${escapeHtml(VENDOR_ROLE[v] || "")}</span>
+        <span class="n">${n}/${state.testTargets.length}</span>
+      </button>`;
+  }).join("");
+}
+
+// ── Step 3: match discovered IDs against the sheet ──────────────────────
+
+// vendor → field → value → [sheet groups carrying it]
+function sheetIndex() {
+  const idx = {};
+  state.groups.forEach(g => {
+    if (!g.expected) return;
+    Object.entries(g.expected).forEach(([f, v]) => {
+      idx[g.platform] = idx[g.platform] || {};
+      idx[g.platform][f] = idx[g.platform][f] || {};
+      (idx[g.platform][f][v] = idx[g.platform][f][v] || []).push(g);
+    });
+  });
+  return idx;
+}
+
+function renderMatch() {
+  const vendors = discoveredVendors().filter(v => state.selectedVendors.has(v));
+  const anyScan = Object.values(state.scan).some(r => r.vendors);
+  const section = document.getElementById("matchSection");
+  section.hidden = !anyScan;
+  if (!anyScan) return;
+
+  const idx = sheetIndex();
+  const haveSheet = state.groups.length > 0;
+  document.getElementById("matchDesc").textContent = haveSheet
+    ? "Each ID found on a page, looked up in the uploaded sheet. A hit whose sheet row names a different creative than the page is flagged — that's the wrong tag in the right slot."
+    : "No trafficking sheet uploaded yet — showing what fired on each page. Upload the sheet to check these against what was booked.";
+
+  document.getElementById("matchList").innerHTML = state.testTargets.map(t => {
+    const r = state.scan[t.tid];
+    if (!r || !r.vendors) return "";
+    const rows = vendors.map(vendor => {
+      const found = r.vendors[vendor];
+      const label = `${t.size}_${t.variant} · ${vendor}`;
+      if (!found) {
+        return `<div class="scan-row">
+          <span class="plat">${escapeHtml(t.size)}_${escapeHtml(t.variant)}</span>
+          <span class="found"><span class="chip-found">${escapeHtml(vendor)}</span> not firing on this page</span>
+          <span class="status-pill fail">missing</span>
+        </div>`;
+      }
+      const fields = MATCH_FIELDS[vendor] || Object.keys(found);
+      const checks = fields.filter(f => found[f]).map(f => {
+        const values = found[f];
+        return values.map(val => {
+          const hits = (((idx[vendor] || {})[f] || {})[val]) || [];
+          if (!haveSheet) return { f, val, cls: "", note: "found on page" };
+          if (!hits.length) return { f, val, cls: "bad", note: "not in sheet" };
+          const named = hits.find(g => g.nameHint);
+          if (named && named.nameHint && (named.nameHint.size !== t.size || named.nameHint.variant !== t.variant)) {
+            return { f, val, cls: "bad", note: "in sheet, but booked as " + named.nameHint.size + "_" + named.nameHint.variant };
+          }
+          return { f, val, cls: "ok", note: "in sheet" };
+        });
+      }).flat();
+      const bad = checks.some(c => c.cls === "bad");
+      const pill = !haveSheet ? "running" : bad ? "fail" : "pass";
+      const pillText = !haveSheet ? "found" : bad ? "mismatch" : "matches sheet";
+      return `<div class="scan-row">
+          <span class="plat">${escapeHtml(t.size)}_${escapeHtml(t.variant)}</span>
+          <span class="found"><span class="chip-found ${MAIN_VENDORS.includes(vendor) ? "main" : ""}">${escapeHtml(vendor)}</span></span>
+          <span class="status-pill ${pill}">${escapeHtml(pillText)}</span>
+          <div class="match-detail">${checks.map(c =>
+            `${escapeHtml(c.f)}=${escapeHtml(c.val)} <span class="${c.cls}">${escapeHtml(c.note)}</span>`).join(" &nbsp;·&nbsp; ")}</div>
+        </div>`;
+    }).join("");
+    return rows;
   }).join("");
 }
 
@@ -1029,7 +1222,9 @@ function render() {
   renderPhase();
   renderResults();
   renderVerify();
-  renderCrossRef();
+  renderScan();
+  renderVendors();
+  renderMatch();
 }
 
 document.getElementById("tabPaste").addEventListener("click", () => setMode("paste"));
@@ -1050,7 +1245,16 @@ document.getElementById("dropzone").addEventListener("drop", (e) => {
 });
 
 document.getElementById("runVerify").addEventListener("click", runVerification);
-document.getElementById("runCrossCheck").addEventListener("click", runCrossCheck);
+document.getElementById("runScan").addEventListener("click", runScan);
+document.getElementById("vendorPicker").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-vendor]");
+  if (!chip) return;
+  const v = chip.dataset.vendor;
+  state.vendorTouched = true;
+  if (state.selectedVendors.has(v)) state.selectedVendors.delete(v);
+  else state.selectedVendors.add(v);
+  renderVendors(); renderMatch();
+});
 document.getElementById("clearAll").addEventListener("click", clearAll);
 
 document.getElementById("copyAll").addEventListener("click", (e) => {
