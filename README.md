@@ -105,4 +105,32 @@ scripts/
   retest_*.py       targeted re-runs against previously failed placements
   monitor_pudelek.py
   test_click_dv360.py
+frontend/
+  index.html        the extraction step below, as a standalone page
 ```
+
+## Frontend — Tag ID Extractor
+
+`frontend/index.html` is a single self-contained page (no build step, no
+server) for the step that happens before any of the scripts above run:
+pulling the platform and ID out of a tag someone pasted from an email, or out
+of a trafficking-sheet export.
+
+Open it directly in a browser — `frontend/index.html`, no server needed. Two
+input modes:
+
+- **Paste raw text** — drop in an email body, a Slack message, whatever.
+  Every URL in the text is scanned; prose and broken line-wraps around it are
+  ignored.
+- **Upload a trafficking sheet** (`.xlsx`/`.xls`, parsed client-side via
+  [SheetJS](https://sheetjs.com)) — every cell on every sheet is scanned, and
+  each match reports back the sheet and cell it came from (e.g. `Sheet1!C14`),
+  the same way the `read_*_tags.py` scripts do it with pandas.
+
+Recognizes the same three platforms the scripts verify — Adform (`bn=`),
+CM360 (`dc_trk_aid`, `dc_trk_cid`, the `N…/B…` site/placement pair), and
+Google Ad Manager preview URLs (`iu`, `lineItemId`, `creativeId`,
+`gdfp_req`) — and turns the results into a `URLS = [...]` list in the exact
+tuple shape every `verify_*.py` script already expects, one click away on the
+clipboard. Nothing is uploaded anywhere; parsing runs entirely in the
+browser tab.

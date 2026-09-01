@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tag ID Extractor — ad-tag-verifier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=Archivo+Mono:wght@400;500;600&display=swap">
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --color-bg: #f3f2f2;
+    --color-text: #201e1d;
+    --color-accent: #ec3013;
+    --color-divider: rgba(32, 30, 29, .4);
+
+    --color-neutral-100: #f8f4f4;
+    --color-neutral-200: #eae7e7;
+    --color-neutral-300: #d7d3d3;
+    --color-neutral-400: #bab6b6;
+    --color-neutral-600: #7d7979;
+    --color-neutral-700: #605d5d;
+    --color-neutral-800: #444141;
+
+    --color-accent-100: #fff2ef;
+    --color-accent-300: #ffc4b8;
+    --color-accent-600: #dd2b0f;
+    --color-accent-700: #ae1800;
+
+    --font-heading: "Archivo", system-ui, sans-serif;
+    --font-body: "Archivo", system-ui, sans-serif;
+    --font-mono: "Archivo Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
+    --shadow-md: 0 3px 10px rgba(45, 43, 43, .16);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--color-bg); color: var(--color-text);
+    font-family: var(--font-body); font-size: 14px; line-height: 1.45;
+  }
+  a { color: var(--color-accent-700); text-decoration: none; border-bottom: 1px solid var(--color-accent-300); }
+  a:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+  ::selection { background: var(--color-accent-300); }
+  *:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  button { font: inherit; }
+  [hidden] { display: none !important; }
+
+  header.top {
+    display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-6);
+    padding: var(--space-4) var(--space-8); border-bottom: 2px solid var(--color-divider);
+  }
+  header.top .brand { display: flex; align-items: baseline; gap: var(--space-4); }
+  header.top .name {
+    font-family: var(--font-heading); font-weight: 800; font-size: 20px;
+    letter-spacing: -.01em; text-transform: uppercase;
+  }
+  .label-sm { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-neutral-600); }
+
+  main { max-width: 1360px; margin: 0 auto; padding: var(--space-8); }
+
+  .input-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-8); align-items: start;
+  }
+  .input-col { display: flex; flex-direction: column; gap: var(--space-4); }
+  .mode-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+  .tabs { display: flex; border: 2px solid var(--color-text); }
+  .tab {
+    padding: 10px var(--space-4); background: transparent; color: var(--color-text);
+    border: none; font-family: var(--font-body); font-weight: 600; font-size: 12px;
+    letter-spacing: .08em; text-transform: uppercase; cursor: pointer; text-align: left;
+  }
+  .tab:hover { opacity: .85; }
+  .tab.on { background: var(--color-text); color: var(--color-neutral-100); }
+  .sample-link {
+    background: none; border: none; padding: 0; font-family: var(--font-body); font-size: 12px;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--color-neutral-700); cursor: pointer;
+    border-bottom: 1px solid var(--color-neutral-400);
+  }
+  .sample-link:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+
+  textarea#pasteInput {
+    width: 100%; height: 260px; resize: vertical; padding: var(--space-4);
+    background: var(--color-neutral-100); border: 2px solid var(--color-text);
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--color-text);
+  }
+  textarea#pasteInput::placeholder { color: var(--color-neutral-600); }
+
+  .btn-accent {
+    display: inline-flex; align-items: center; gap: var(--space-2); padding: 11px var(--space-4);
+    background: var(--color-accent); color: #fff; border: none; font-family: var(--font-body);
+    font-weight: 600; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; cursor: pointer;
+  }
+  .btn-accent:hover { background: var(--color-accent-600); }
+  .btn-accent:active { background: var(--color-accent-700); }
+  .hint { font-size: 12px; color: var(--color-neutral-600); }
+
+  .actions-row { display: flex; align-items: center; gap: var(--space-4); }
+
+  .dropzone {
+    display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+    gap: var(--space-2); height: 260px; padding: var(--space-8);
+    background: var(--color-neutral-100); border: 2px dashed var(--color-neutral-400);
+    cursor: pointer; position: relative;
+  }
+  .dropzone:hover, .dropzone.drag { border-color: var(--color-accent); background: var(--color-accent-100); }
+  .dropzone input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .dropzone .headline { font-family: var(--font-heading); font-weight: 800; font-size: 22px; letter-spacing: -.01em; }
+  .dropzone .desc { font-size: 13px; color: var(--color-neutral-700); max-width: 46ch; }
+  .dropzone .cta {
+    margin-top: var(--space-2); font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--color-accent-700); border-bottom: 1px solid var(--color-accent-300);
+  }
+
+  aside.legend { border: 2px solid var(--color-divider); padding: var(--space-4); }
+  aside.legend .title { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--color-neutral-600); margin-bottom: var(--space-3); }
+  .legend-grid { display: grid; gap: var(--space-3); }
+  .legend-item { display: grid; gap: 2px; padding-bottom: var(--space-3); border-bottom: 1px solid var(--color-neutral-300); }
+  .legend-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .legend-item .name { font-family: var(--font-heading); font-weight: 700; font-size: 14px; }
+  .legend-item .where { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-neutral-700); }
+  .legend-item .fields { font-size: 12px; }
+
+  section.phase { margin-top: var(--space-8); border-top: 2px solid var(--color-divider); padding-top: var(--space-6); }
+
+  .headline-lg { font-family: var(--font-heading); font-weight: 800; font-size: 28px; letter-spacing: -.015em; }
+  #parsingNote { font-family: var(--font-mono); font-size: 12.5px; color: var(--color-neutral-700); margin-top: var(--space-3); }
+  .progress-track { height: 6px; background: var(--color-neutral-300); overflow: hidden; margin-top: var(--space-3); }
+  .progress-fill { height: 100%; width: 45%; background: var(--color-accent); }
+
+  #emptyDetail { font-size: 13.5px; max-width: 62ch; color: var(--color-neutral-800); margin-top: var(--space-3); }
+  .supported-line {
+    font-family: var(--font-mono); font-size: 12px; color: var(--color-neutral-700);
+    border-left: 2px solid var(--color-accent); padding-left: var(--space-3); margin-top: var(--space-3);
+  }
+
+  .results-head {
+    display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-6);
+    flex-wrap: wrap; margin-bottom: var(--space-4);
+  }
+  #sourceLine { font-family: var(--font-mono); font-size: 12px; color: var(--color-neutral-700); }
+  .results-body { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-8); align-items: start; }
+
+  .filters { display: flex; align-items: stretch; border: 2px solid var(--color-text); margin-bottom: var(--space-4); flex-wrap: wrap; }
+  .filter-group { display: flex; align-items: stretch; border-right: 1px solid var(--color-neutral-400); }
+  .filter-btn {
+    display: inline-flex; align-items: baseline; gap: var(--space-2); padding: 9px var(--space-4);
+    background: transparent; color: var(--color-text); border: none; font-family: var(--font-body);
+    font-weight: 600; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; cursor: pointer;
+  }
+  .filter-btn.on { background: var(--color-accent); color: #fff; }
+  .filter-btn .count { font-family: var(--font-mono); opacity: .7; }
+  .filter-copy {
+    padding: 0 var(--space-3); background: none; border: none; border-left: 1px dashed var(--color-neutral-400);
+    font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-700); cursor: pointer; white-space: nowrap;
+  }
+  .filter-copy:hover { color: var(--color-accent); background: var(--color-accent-100); }
+
+  .table-wrap { border: 2px solid var(--color-text); max-height: 560px; overflow: auto; }
+  table#resultsTable { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  #resultsTable thead th {
+    text-align: left; padding: var(--space-2) var(--space-3); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .12em; text-transform: uppercase; position: sticky; top: 0;
+    background: var(--color-text); color: var(--color-neutral-100);
+  }
+  #resultsTable th.c-platform { width: 118px; } #resultsTable th.c-idtype { width: 150px; }
+  #resultsTable th.c-source { width: 190px; } #resultsTable th.c-copy { width: 92px; }
+  #resultsTable td { padding: var(--space-2) var(--space-3); vertical-align: top; border-bottom: 1px solid var(--color-neutral-300); }
+  #resultsTable tr.alt { background: var(--color-neutral-100); }
+  #resultsTable tr:hover { background: var(--color-neutral-200); }
+  #resultsTable tr.copied { background: var(--color-accent-100); }
+  .cell-platform { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+  .cell-idtype { font-family: var(--font-mono); font-size: 12px; color: var(--color-neutral-800); }
+  .cell-value { font-family: var(--font-mono); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+  .cell-source { position: relative; font-family: var(--font-mono); font-size: 11.5px; color: var(--color-neutral-700); }
+  .cell-source .ref { border-bottom: 1px dotted var(--color-neutral-500); cursor: help; }
+  .snippet-popover {
+    display: none; position: absolute; z-index: 40; left: 0; top: calc(100% - 2px);
+    width: 460px; max-width: 46vw; padding: var(--space-3);
+    background: var(--color-neutral-100); border: 2px solid var(--color-text); box-shadow: var(--shadow-md);
+  }
+  tr:hover .snippet-popover { display: block; }
+  .snippet-popover .lbl { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-neutral-600); margin-bottom: 6px; }
+  .snippet-popover .text { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+  .row-copy {
+    padding: 3px 9px; background: none; border: 1px solid var(--color-neutral-400); color: var(--color-neutral-700);
+    font-family: var(--font-body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    cursor: pointer; white-space: nowrap;
+  }
+  .row-copy:hover, .row-copy.copied { border-color: var(--color-accent); color: var(--color-accent); }
+
+  .table-foot { display: flex; justify-content: space-between; gap: var(--space-4); margin-top: var(--space-2); font-family: var(--font-mono); font-size: 11.5px; color: var(--color-neutral-600); }
+
+  .badge {
+    display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+    background: var(--color-accent); color: #fff; font-size: 11px; font-weight: 700; flex: none;
+  }
+  .badge.outline { background: none; border: 2px solid var(--color-text); color: var(--color-text); }
+  .notes-aside { display: flex; flex-direction: column; gap: var(--space-6); border-left: 2px solid var(--color-divider); padding-left: var(--space-4); }
+  .note { display: flex; gap: var(--space-3); }
+  .note .body { display: grid; gap: var(--space-2); }
+  .note .title { font-family: var(--font-heading); font-weight: 700; font-size: 13.5px; }
+  .note .desc { font-size: 12.5px; color: var(--color-neutral-800); }
+  .note .code {
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.6; background: var(--color-neutral-100);
+    border: 1px solid var(--color-neutral-300); padding: var(--space-2); overflow-wrap: anywhere; color: var(--color-neutral-800);
+  }
+  .note .sub { font-size: 12px; color: var(--color-neutral-700); }
+
+  footer.bottom {
+    margin-top: var(--space-8); border-top: 2px solid var(--color-divider); padding-top: var(--space-4);
+    display: flex; justify-content: space-between; gap: var(--space-4); font-size: 11px;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--color-neutral-600); flex-wrap: wrap;
+  }
+
+  code.inline { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <div class="name">Tag ID Extractor</div>
+    <div class="label-sm">v1 &nbsp;/&nbsp; client-side only</div>
+  </div>
+  <div class="label-sm"><a href="https://github.com/noodisD/ad-tag-verifier">ad-tag-verifier</a> &nbsp;/&nbsp; extraction step</div>
+</header>
+
+<main>
+  <section class="input-row">
+    <div class="input-col">
+      <div class="mode-row">
+        <div class="tabs">
+          <button type="button" class="tab on" id="tabPaste">Paste raw text</button>
+          <button type="button" class="tab" id="tabFile">Upload trafficking sheet</button>
+        </div>
+        <button type="button" class="sample-link" id="loadSample">Load sample email</button>
+      </div>
+
+      <div id="pastePanel">
+        <textarea id="pasteInput" spellcheck="false" placeholder="Paste the whole email, Slack message or block of tag copy. Prose, signatures and broken line-wraps are fine — nothing needs cleaning first."></textarea>
+        <div class="actions-row" style="margin-top: var(--space-3);">
+          <button type="button" class="btn-accent" id="runPaste">Extract IDs</button>
+          <span class="hint">or ⌘ + Enter. Nothing is uploaded — parsing runs in this browser tab.</span>
+        </div>
+      </div>
+
+      <div id="filePanel" hidden>
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept=".xlsx,.xls">
+          <div class="headline">Drop an .xlsx / .xls sheet</div>
+          <div class="desc">Every cell on every sheet is scanned, the same way <code class="inline">read_*_tags.py</code> does with pandas. Each match reports the sheet and cell it came from.</div>
+          <div class="cta">Choose a file</div>
+        </label>
+        <div class="hint" style="margin-top: var(--space-3);">Campaign data never leaves the browser — the spreadsheet reader runs locally.</div>
+      </div>
+    </div>
+
+    <aside class="legend">
+      <div class="title">What it recognizes</div>
+      <div class="legend-grid">
+        <div class="legend-item">
+          <div class="name">Adform</div>
+          <div class="where">adfserve · adform.net/C/</div>
+          <div class="fields">pulls <b>bn=</b> (impression &amp; click)</div>
+        </div>
+        <div class="legend-item">
+          <div class="name">CM360</div>
+          <div class="where">ddm/trackimp · ddm/trackclk</div>
+          <div class="fields">pulls <b>dc_trk_aid</b>, <b>dc_trk_cid</b>, <b>N…/B…</b></div>
+        </div>
+        <div class="legend-item">
+          <div class="name">Ad Manager</div>
+          <div class="where">google_preview query string</div>
+          <div class="fields">pulls <b>iu</b>, <b>lineItemId</b>, <b>creativeId</b>, <b>gdfp_req</b></div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="phase" id="parsingSection" hidden>
+    <div class="headline-lg">Reading sheet…</div>
+    <div id="parsingNote"></div>
+    <div class="progress-track"><div class="progress-fill"></div></div>
+  </section>
+
+  <section class="phase" id="emptySection" hidden>
+    <div class="headline-lg">No tags recognized</div>
+    <div id="emptyDetail"></div>
+    <div class="supported-line">Supported: adfserve/adform.net/C/ · ad.doubleclick.net/ddm/trackimp|trackclk · google_preview + gdfp_req query strings</div>
+  </section>
+
+  <section class="phase" id="resultsSection" hidden>
+    <div class="results-head">
+      <div>
+        <div class="headline-lg" id="resultHeadline"></div>
+        <div id="sourceLine"></div>
+      </div>
+      <div class="actions-row">
+        <span class="badge">A</span>
+        <button type="button" class="btn-accent" id="copyAll">Copy as Python URLS list</button>
+      </div>
+    </div>
+
+    <div class="results-body">
+      <div style="min-width: 0;">
+        <div class="filters" id="filters"></div>
+        <div class="table-wrap">
+          <table id="resultsTable">
+            <thead>
+              <tr>
+                <th class="c-platform">Platform</th>
+                <th class="c-idtype">ID type</th>
+                <th>Value</th>
+                <th class="c-source">Source</th>
+                <th class="c-copy"><span style="display:inline-flex;align-items:center;gap:6px;"><span>Copy</span><span class="badge" style="width:15px;height:15px;font-size:10px;">B</span></span></th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody"></tbody>
+          </table>
+        </div>
+        <div class="table-foot">
+          <span id="tableFoot"></span>
+          <span id="truncNote"></span>
+        </div>
+      </div>
+
+      <aside class="notes-aside">
+        <div class="title" style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-600);">Interaction notes</div>
+
+        <div class="note">
+          <span class="badge">A</span>
+          <div class="body">
+            <div class="title">Copy as Python URLS list</div>
+            <div class="desc">One tuple per source URL, in the shape every <code class="inline">verify_*.py</code> already uses. On click → label swaps to <b>✓ Copied — N placements</b> for 1.5s, then reverts. No toast.</div>
+            <div class="code">URLS = [<br>&nbsp;&nbsp;&nbsp;&nbsp;("Adform 1", {88915001}, "https://…"),<br>]</div>
+            <div class="sub">The platform chips carry the same action scoped to one platform (<code class="inline">.py</code> on the chip), for cherry-picking a single vendor out of a mixed paste.</div>
+          </div>
+        </div>
+
+        <div class="note">
+          <span class="badge">B</span>
+          <div class="body">
+            <div class="title">Per-row copy</div>
+            <div class="desc">Copies the raw value only, no quotes. On click → the label becomes <b>✓ copied</b> for 1.5s; the row keeps its tint so the eye doesn't lose its place. Row order never changes.</div>
+          </div>
+        </div>
+
+        <div class="note">
+          <span class="badge outline">C</span>
+          <div class="body">
+            <div class="title">Source, on hover</div>
+            <div class="desc">The cell shows the reference only — <code class="inline">Sheet1!C14</code> or <code class="inline">line 7</code>. Hovering the row reveals the full line or cell it was pulled from, so a bad match is spottable without adding weight to every row.</div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <footer class="bottom">
+    <span>Extraction only — no browser is opened, no request is made to a publisher</span>
+    <span>No accounts · no saved history · read-and-copy</span>
+  </footer>
+</main>
+
+<script>
+"use strict";
+
+const URL_RE = /https?:\/\/[^\s"'<>)\]]+/g;
+const SAMPLE = `Hej,
+
+poniżej tagi do weryfikacji — Linia3 / Linia4, proszę o desktop i mobile.
+
+Screening desktop:
+https://www.eska.pl/news/?google_preview=PLACEHOLDER&iu=1014333&gdfp_req=1&lineItemId=9000000125&creativeId=900000027674
+Screening mobile top:
+https://www.eska.pl/?force_mobile=1&google_preview=PLACEHOLDER&iu=1014333&gdfp_req=1&lineItemId=9000000125&creativeId=900000027641
+Floorad desktop:
+https://www.eska.pl/news/?google_preview=PLACEHOLDER&iu=1014333&gdfp_req=1&lineItemId=9000000396&creativeId=900000042591
+
+Adform (moto.pl branding):
+imp: https://track.adform.net/adfserve/?bn=88915001&1x1inv=1&crtbwp=x
+klik: https://track.adform.net/C/?bn=88915001&cpdir=
+
+CM360 (HVP):
+https://ad.doubleclick.net/ddm/trackimp/N90000001.900000002/B900000003.900000004;dc_trk_aid=900000001;dc_trk_cid=900000002;ord=1
+https://ad.doubleclick.net/ddm/trackclk/N90000001.900000002/B900000003.900000004;dc_trk_aid=900000001;dc_trk_cid=900000002
+
+Dzięki, daj znać jak coś nie pyka.`;
+
+function clean(u) {
+  return u.replace(/&amp;/g, "&").replace(/&#0?38;/g, "&").replace(/[;,.)\]]+$/, "");
+}
+function param(u, k) {
+  const m = u.match(new RegExp("[?&;]" + k + "=([^&;\\s\"']+)", "i"));
+  return m ? m[1] : null;
+}
+function platformOf(u) {
+  const l = u.toLowerCase();
+  if (l.includes("adform")) return "Adform";
+  if (l.includes("doubleclick.net/ddm/track")) return "CM360";
+  if (/[?&]gdfp_req=/.test(l) || (/[?&]iu=/.test(l) && l.includes("google_preview"))) return "Ad Manager";
+  return null;
+}
+function fieldsOf(u, platform) {
+  const out = [];
+  if (platform === "Adform") {
+    const bn = param(u, "bn");
+    if (!bn) return out;
+    const kind = /adform\.net\/c\//i.test(u) ? "bn (click)" : (/adfserve|1x1inv/i.test(u) ? "bn (impression)" : "bn");
+    out.push(["bn", kind, bn]);
+  } else if (platform === "CM360") {
+    const aid = param(u, "dc_trk_aid");
+    const cid = param(u, "dc_trk_cid");
+    const pair = u.match(/ddm\/track(?:imp|clk)\/(N[\d.]+)\/(B[\d.]+)/i);
+    if (aid) out.push(["dc_trk_aid", "dc_trk_aid", aid]);
+    if (cid) out.push(["dc_trk_cid", "dc_trk_cid", cid]);
+    if (pair) out.push(["np", "site/placement", pair[1] + "/" + pair[2]]);
+  } else if (platform === "Ad Manager") {
+    [["iu", "iu"], ["lineItemId", "lineItemId"], ["creativeId", "creativeId"], ["gdfp_req", "gdfp_req"]].forEach(([k, label]) => {
+      const v = param(u, k);
+      if (v) out.push([k, label, v]);
+    });
+  }
+  return out;
+}
+function primaryOf(platform, fields) {
+  const want = platform === "Adform" ? "bn" : platform === "CM360" ? "dc_trk_aid" : "creativeId";
+  const hit = fields.find(f => f[0] === want) || fields[0];
+  return hit ? hit[2] : null;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+const state = {
+  mode: "paste",
+  phase: "idle", // idle | parsing | empty | results
+  rows: [],
+  groups: [],
+  filter: "All",
+  sourceLine: "",
+  parseNote: "",
+};
+
+function extract(units, sourceLine) {
+  const rows = [], groups = [];
+  const seen = new Set();
+  const counters = {};
+  units.forEach(unit => {
+    const text = unit.text || "";
+    (text.match(URL_RE) || []).forEach(raw => {
+      const url = clean(raw);
+      const platform = platformOf(url);
+      if (!platform) return;
+      const fields = fieldsOf(url, platform);
+      if (!fields.length) return;
+      counters[platform] = (counters[platform] || 0) + 1;
+      groups.push({ platform, label: platform + " " + counters[platform], primary: primaryOf(platform, fields), url });
+      fields.forEach(([, idType, value]) => {
+        const key = platform + "|" + idType + "|" + value + "|" + unit.ref;
+        if (seen.has(key)) return;
+        seen.add(key);
+        rows.push({ platform, idType, value, source: unit.ref, snippet: unit.snippet || text, snippetLabel: unit.snippetLabel });
+      });
+    });
+  });
+  state.rows = rows;
+  state.groups = groups;
+  state.filter = "All";
+  state.sourceLine = sourceLine;
+  state.phase = rows.length ? "results" : "empty";
+  render();
+}
+
+function runPaste() {
+  const text = document.getElementById("pasteInput").value || "";
+  if (!text.trim()) return;
+  const lines = text.split(/\r?\n/);
+  const units = lines.map((line, i) => ({
+    text: line, ref: "line " + (i + 1), snippet: line.trim(),
+    snippetLabel: "pasted text · line " + (i + 1)
+  }));
+  extract(units, "pasted text · " + lines.length + " lines · " + text.length.toLocaleString() + " chars");
+}
+
+function loadSample() {
+  setMode("paste");
+  const ta = document.getElementById("pasteInput");
+  ta.value = SAMPLE;
+  ta.focus();
+  runPaste();
+}
+
+function onFile(file) {
+  if (!file) return;
+  state.phase = "parsing";
+  state.parseNote = "reading " + file.name + " — " + Math.round(file.size / 1024) + " KB";
+  render();
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    setTimeout(() => {
+      let wb;
+      try {
+        wb = window.XLSX.read(new Uint8Array(ev.target.result), { type: "array" });
+      } catch (err) {
+        state.phase = "empty";
+        state.sourceLine = file.name + " — could not be read";
+        render();
+        return;
+      }
+      const units = [];
+      let cells = 0;
+      wb.SheetNames.forEach(name => {
+        const ws = wb.Sheets[name];
+        Object.keys(ws).forEach(addr => {
+          if (addr[0] === "!") return;
+          const cell = ws[addr];
+          const v = cell && (cell.w != null ? cell.w : cell.v);
+          if (v == null) return;
+          cells++;
+          units.push({
+            text: String(v), ref: name + "!" + addr, snippet: String(v).trim(),
+            snippetLabel: "cell " + name + "!" + addr
+          });
+        });
+      });
+      extract(units, file.name + " · " + wb.SheetNames.length + " sheet(s) · " + cells.toLocaleString() + " cells scanned");
+    }, 900);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function pythonList(platform) {
+  const g = platform === "All" ? state.groups : state.groups.filter(x => x.platform === platform);
+  const body = g.map(x => '    ("' + x.label + '", {' + (x.primary || "") + '}, "' + x.url + '"),').join("\n");
+  return "URLS = [\n" + body + "\n]\n";
+}
+function writeClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  } else {
+    const t = document.createElement("textarea");
+    t.value = text; document.body.appendChild(t); t.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(t);
+  }
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  document.getElementById("tabPaste").classList.toggle("on", mode === "paste");
+  document.getElementById("tabFile").classList.toggle("on", mode === "file");
+  document.getElementById("pastePanel").hidden = mode !== "paste";
+  document.getElementById("filePanel").hidden = mode !== "file";
+}
+
+function renderPhase() {
+  const s = state;
+  document.getElementById("parsingSection").hidden = s.phase !== "parsing";
+  document.getElementById("emptySection").hidden = s.phase !== "empty";
+  document.getElementById("resultsSection").hidden = s.phase !== "results";
+
+  if (s.phase === "parsing") {
+    document.getElementById("parsingNote").textContent = s.parseNote;
+  }
+  if (s.phase === "empty") {
+    document.getElementById("emptyDetail").textContent =
+      (s.sourceLine ? "Read " + s.sourceLine + "." : "Input was read.") +
+      " Nothing matched Adform, CM360 or Ad Manager. Either these platforms aren't present, or the tag shape is one this version doesn't cover yet.";
+  }
+}
+
+function renderResults() {
+  const s = state;
+  if (s.phase !== "results") return;
+
+  document.getElementById("resultHeadline").textContent = s.rows.length + " IDs across " + s.groups.length + " tag URLs";
+  document.getElementById("sourceLine").textContent = s.sourceLine;
+
+  const counts = { All: s.rows.length };
+  s.rows.forEach(r => { counts[r.platform] = (counts[r.platform] || 0) + 1; });
+  const names = ["All", "Adform", "CM360", "Ad Manager"].filter(n => n === "All" || counts[n]);
+
+  const filtersEl = document.getElementById("filters");
+  filtersEl.innerHTML = names.map(n => `
+    <div class="filter-group">
+      <button type="button" class="filter-btn ${s.filter === n ? "on" : ""}" data-filter="${escapeHtml(n)}">
+        <span>${escapeHtml(n)}</span><span class="count">${counts[n] || 0}</span>
+      </button>
+      ${n !== "All" ? `<button type="button" class="filter-copy" data-copy-platform="${escapeHtml(n)}" title="copy this platform as a Python URLS list">.py</button>` : ""}
+    </div>
+  `).join("");
+
+  const filtered = s.filter === "All" ? s.rows : s.rows.filter(r => r.platform === s.filter);
+  const shown = filtered.slice(0, 500);
+
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = shown.map((r, i) => {
+    const idx = s.rows.indexOf(r);
+    return `
+    <tr class="${i % 2 ? "alt" : ""}" data-row="${idx}">
+      <td class="cell-platform">${escapeHtml(r.platform)}</td>
+      <td class="cell-idtype">${escapeHtml(r.idType)}</td>
+      <td class="cell-value">${escapeHtml(r.value)}</td>
+      <td class="cell-source">
+        <span class="ref">${escapeHtml(r.source)}</span>
+        <div class="snippet-popover">
+          <div class="lbl">${escapeHtml(r.snippetLabel || "")}</div>
+          <div class="text">${escapeHtml(r.snippet)}</div>
+        </div>
+      </td>
+      <td><button type="button" class="row-copy" data-copy-row="${idx}">copy</button></td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("tableFoot").textContent =
+    filtered.length + " of " + s.rows.length + " rows" + (s.filter === "All" ? "" : " · " + s.filter);
+  document.getElementById("truncNote").textContent =
+    filtered.length > 500 ? "showing first 500 — filter to narrow" : "hover a row to see its source line";
+}
+
+function render() {
+  renderPhase();
+  renderResults();
+}
+
+document.getElementById("tabPaste").addEventListener("click", () => setMode("paste"));
+document.getElementById("tabFile").addEventListener("click", () => setMode("file"));
+document.getElementById("loadSample").addEventListener("click", loadSample);
+document.getElementById("runPaste").addEventListener("click", runPaste);
+document.getElementById("pasteInput").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runPaste();
+});
+document.getElementById("fileInput").addEventListener("change", (e) => onFile(e.target.files && e.target.files[0]));
+document.getElementById("dropzone").addEventListener("dragover", (e) => { e.preventDefault(); e.currentTarget.classList.add("drag"); });
+document.getElementById("dropzone").addEventListener("dragleave", (e) => e.currentTarget.classList.remove("drag"));
+document.getElementById("dropzone").addEventListener("drop", (e) => {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drag");
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) onFile(file);
+});
+
+document.getElementById("copyAll").addEventListener("click", (e) => {
+  writeClipboard(pythonList("All"));
+  const btn = e.currentTarget;
+  const prev = btn.textContent;
+  btn.textContent = "✓ Copied — " + state.groups.length + " placements";
+  setTimeout(() => { btn.textContent = prev; }, 1500);
+});
+
+document.getElementById("filters").addEventListener("click", (e) => {
+  const filterBtn = e.target.closest("[data-filter]");
+  if (filterBtn) { state.filter = filterBtn.dataset.filter; renderResults(); return; }
+  const copyBtn = e.target.closest("[data-copy-platform]");
+  if (copyBtn) {
+    const platform = copyBtn.dataset.copyPlatform;
+    writeClipboard(pythonList(platform));
+    const prev = copyBtn.textContent;
+    copyBtn.textContent = "✓ .py";
+    setTimeout(() => { copyBtn.textContent = prev; }, 1500);
+  }
+});
+
+document.getElementById("resultsBody").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-copy-row]");
+  if (!btn) return;
+  const idx = Number(btn.dataset.copyRow);
+  const row = state.rows[idx];
+  if (!row) return;
+  writeClipboard(row.value);
+  btn.textContent = "✓ copied";
+  btn.classList.add("copied");
+  btn.closest("tr").classList.add("copied");
+  setTimeout(() => {
+    btn.textContent = "copy";
+    btn.classList.remove("copied");
+    btn.closest("tr").classList.remove("copied");
+  }, 1500);
+});
+</script>
+</body>
+</html>
