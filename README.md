@@ -138,15 +138,38 @@ tuple shape every `verify_*.py` script already expects, one click away on the
 clipboard. Nothing is uploaded anywhere; parsing runs entirely in the
 browser tab.
 
+**A trafficking sheet and a pasted email combine, they don't replace each
+other.** Upload the sheet, then paste the email (or the other order) — both
+actions add to the same session instead of one wiping out the other. This
+matters because they're usually two different things: the sheet is the
+source of truth for what a tag's ID *should* be; a pasted "please QA these"
+email is often a list of bare creative-preview links with no ID of their own
+at all — `.../120x600_faul/`, not a `bn=`-carrying tag URL. The extractor
+recognizes that shape too, and cross-references it: it parses `{size,
+variant}` out of both the preview URL's path and the sheet's line-item /
+creative name (whichever convention the sheet uses), and where they match,
+the sheet's ID becomes the expected value to verify *against that preview
+page* — not against the sheet's own tag URL. See "Verify" below for what
+happens once a match is found.
+
 ## Backend — live verification
 
 Extraction never needs a server. But once you have a `bn=` or
 `dc_trk_aid`/`dc_trk_cid` pulled out of a URL, the natural next question is
 whether it actually fires — and that does need a real browser hitting a real
 page, which a static HTML file can't do on its own. `backend/` is a small
-Flask API for exactly that: the frontend's "Verify" button, when the backend
-is running locally, re-runs the same consent-handling + DOM/network-scan
-technique as the scripts, live, and streams pass/fail back into the table.
+Flask API for exactly that, and the frontend puts it behind two buttons, one
+per verification shape:
+
+- **Verify** — Adform/CM360 tag URLs check themselves: load the URL, confirm
+  its own ID fires somewhere beyond the request that already contained it.
+- **Verify matched targets** — the cross-referenced preview URLs from above:
+  load *that* URL, but check for the ID the trafficking sheet said should be
+  there, since the preview URL itself never carried one.
+
+Both hit the same backend endpoint, running the same consent-handling +
+DOM/network-scan technique the scripts use, live, streaming pass/fail back
+into the page as each one finishes.
 
 ```bash
 cd backend

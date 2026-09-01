@@ -349,6 +349,7 @@
       <div class="actions-row">
         <span class="badge">A</span>
         <button type="button" class="btn-accent" id="copyAll">Copy as Python URLS list</button>
+        <button type="button" class="btn-outline" id="clearAll" title="start a new session — forgets everything extracted so far">Clear</button>
       </div>
     </div>
 
@@ -418,6 +419,19 @@
         </div>
       </div>
       <div class="verify-list" id="verifyList"></div>
+    </div>
+
+    <div class="verify-section" id="crossRefSection" hidden>
+      <div class="verify-head">
+        <div>
+          <div class="headline-md">Test targets</div>
+          <div class="desc">Bare creative-preview URLs — no tag of their own, matched by size + variant against the tags extracted above. Upload the trafficking sheet and paste the test-URL email in either order; both feed this.</div>
+        </div>
+        <div>
+          <button type="button" class="btn-outline" id="runCrossCheck" disabled>Verify matched targets</button>
+        </div>
+      </div>
+      <div class="verify-list" id="crossRefList"></div>
     </div>
   </section>
 
@@ -497,6 +511,26 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// Pulls {size, variant} out of a name-like string — a spreadsheet line-item
+// name ("sample_direct_120x600-Skyscrapper_..._blis-faul") or a bare
+// creative-preview URL path ("/120x600_faul/"). Both encode the same two
+// facts the same rough way: a WxH token, and a trailing variant word after
+// the last separator. That shared shape is what makes auto-matching them
+// against each other possible without knowing either source's exact schema.
+function parseSizeVariant(s) {
+  if (!s) return null;
+  // No \b here: a boundary needs a word/non-word transition, and a size
+  // token is routinely followed directly by "_" or another digit run in
+  // both line-item names ("600_faul") and URL paths — both count as "word"
+  // characters, so \b would silently fail to match right after the digits.
+  const sizeM = s.match(/(\d{2,4}x\d{2,4})/i);
+  if (!sizeM) return null;
+  const tokens = s.split(/[^a-z0-9]+/i).filter(Boolean);
+  const variant = tokens.length ? tokens[tokens.length - 1].toLowerCase() : null;
+  if (!variant || variant === sizeM[1].toLowerCase()) return null;
+  return { size: sizeM[1].toLowerCase(), variant };
+}
+
 const BACKEND_URL = "http://localhost:8877";
 
 const state = {
@@ -504,12 +538,15 @@ const state = {
   phase: "idle", // idle | parsing | empty | results
   rows: [],
   groups: [],
+  testTargets: [],     // bare creative-preview URLs with no platform of their own
+  sources: [],
   filter: "All",
-  sourceLine: "",
   parseNote: "",
   backend: "unknown", // unknown | checking | up | down
-  verify: {},          // gid -> {status, observed, expected}
+  verify: {},          // id (gN or tN) -> {status, observed, expected}
   verifying: false,
+  _seenRows: new Set(),
+  _seenTargets: new Set(),
 };
 
 function fetchWithTimeout(url, opts, ms) {
@@ -518,19 +555,50 @@ function fetchWithTimeout(url, opts, ms) {
   return fetch(url, Object.assign({}, opts, { signal: ctrl.signal })).finally(() => clearTimeout(t));
 }
 
+// Adds this action's finds to the accumulated session — never replaces what
+// a prior paste or upload already turned up, so uploading a trafficking
+// sheet and then pasting an email (in either order) builds one combined
+// picture rather than the second action wiping out the first.
 function extract(units, sourceLine) {
-  const rows = [], groups = [];
-  const seen = new Set();
+  let addedTags = 0, addedTargets = 0;
   const counters = {};
+
   units.forEach(unit => {
-    const text = unit.text || "";
-    (text.match(URL_RE) || []).forEach(raw => {
+    const cells = unit.cells || [unit.text || ""];
+    const fullText = cells.join(" ");
+    // Derive a name-hint from whichever cells are plain identifiers — no
+    // "http" anywhere and no angle brackets — rather than raw tag URLs or
+    // the <img>/<iframe>/<script> markup some exports wrap them in.
+    // Otherwise a tracking URL's own trailing macro junk, or a stray
+    // </noscript> from an embedded third-party pixel, wins the "last
+    // token" heuristic instead of the actual creative/placement name.
+    const isNameLike = c => !/https?:\/\//i.test(c) && !/[<>]/.test(c);
+    const nameSource = cells.some(isNameLike)
+      ? cells.filter(isNameLike).join(" ")
+      : fullText.replace(URL_RE, " ").replace(/<[^>]*>/g, " ");
+    const nameHint = parseSizeVariant(nameSource);
+    const groupKeysThisUnit = new Set();
+
+    (fullText.match(URL_RE) || []).forEach(raw => {
       const url = clean(raw);
       const platform = platformOf(url);
-      if (!platform) return;
+
+      if (!platform) {
+        const tv = parseSizeVariant(url.split(/[?#]/)[0]);
+        if (!tv) return;
+        const tKey = tv.size + "|" + tv.variant + "|" + url;
+        if (state._seenTargets.has(tKey)) return;
+        state._seenTargets.add(tKey);
+        state.testTargets.push({
+          tid: "t" + state.testTargets.length, url, size: tv.size, variant: tv.variant,
+          source: unit.ref, snippet: unit.snippet || fullText, snippetLabel: unit.snippetLabel
+        });
+        addedTargets++;
+        return;
+      }
+
       const fields = fieldsOf(url, platform);
       if (!fields.length) return;
-      counters[platform] = (counters[platform] || 0) + 1;
 
       const expected = {};
       fields.forEach(([key, , value]) => {
@@ -541,27 +609,48 @@ function extract(units, sourceLine) {
         : platform === "CM360" ? !!(expected.dc_trk_aid && expected.dc_trk_cid)
         : false;
 
-      groups.push({
-        gid: "g" + groups.length, platform, label: platform + " " + counters[platform],
-        primary: primaryOf(platform, fields), url, expected, verifiable
+      // One row can carry several near-duplicate tag formats for the same
+      // beacon (CM360 ships an <img>, an <iframe> and a <script> version of
+      // the same impression pixel) — collapse those, but keep a click tag
+      // separate from an impression tag even when they share the same IDs,
+      // since they're genuinely different endpoints that can fail independently.
+      const isClick = /trackclk|adform\.net\/c\//i.test(url);
+      const groupKey = platform + "|" + JSON.stringify(expected) + "|" + (isClick ? "clk" : "imp");
+      if (verifiable) {
+        if (groupKeysThisUnit.has(groupKey)) return;
+        groupKeysThisUnit.add(groupKey);
+      }
+
+      counters[platform] = (counters[platform] || 0) + 1;
+      const gid = "g" + state.groups.length;
+      state.groups.push({
+        gid, platform, label: platform + " " + counters[platform],
+        primary: primaryOf(platform, fields), url, expected, verifiable, nameHint
       });
+      addedTags++;
+
       fields.forEach(([, idType, value]) => {
         const key = platform + "|" + idType + "|" + value + "|" + unit.ref;
-        if (seen.has(key)) return;
-        seen.add(key);
-        rows.push({ platform, idType, value, source: unit.ref, snippet: unit.snippet || text, snippetLabel: unit.snippetLabel });
+        if (state._seenRows.has(key)) return;
+        state._seenRows.add(key);
+        state.rows.push({ platform, idType, value, source: unit.ref, snippet: unit.snippet || fullText, snippetLabel: unit.snippetLabel });
       });
     });
   });
-  state.rows = rows;
-  state.groups = groups;
+
+  state.sources.push({ label: sourceLine, tags: addedTags, targets: addedTargets });
   state.filter = "All";
-  state.sourceLine = sourceLine;
-  state.phase = rows.length ? "results" : "empty";
-  state.verify = {};
-  state.verifying = false;
+  state.phase = (state.rows.length || state.testTargets.length) ? "results" : "empty";
   render();
-  if (rows.length) checkBackend();
+  if (state.rows.length || state.testTargets.length) checkBackend();
+}
+
+function clearAll() {
+  state.rows = []; state.groups = []; state.testTargets = []; state.sources = [];
+  state.filter = "All"; state.verify = {}; state.verifying = false; state.phase = "idle";
+  state._seenRows.clear(); state._seenTargets.clear();
+  document.getElementById("pasteInput").value = "";
+  render();
 }
 
 function runPaste() {
@@ -595,24 +684,37 @@ function onFile(file) {
       try {
         wb = window.XLSX.read(new Uint8Array(ev.target.result), { type: "array" });
       } catch (err) {
-        state.phase = "empty";
-        state.sourceLine = file.name + " — could not be read";
+        state.phase = state.rows.length || state.testTargets.length ? "results" : "empty";
         render();
         return;
       }
+      // Grouped by row, not by cell: a trafficking sheet's tag URL and the
+      // creative/line-item name that names it live in separate cells of the
+      // same row, and cross-referencing needs both together. Column layout
+      // varies a lot between export tools (Adform's is four narrow columns;
+      // CM360's is twenty-plus, with tags embedded inside raw <img>/<iframe>
+      // markup) — grouping by row rather than assuming a column position is
+      // what lets the same code handle either without per-format branches.
       const units = [];
       let cells = 0;
       wb.SheetNames.forEach(name => {
         const ws = wb.Sheets[name];
+        const rows = {};
         Object.keys(ws).forEach(addr => {
           if (addr[0] === "!") return;
           const cell = ws[addr];
           const v = cell && (cell.w != null ? cell.w : cell.v);
           if (v == null) return;
           cells++;
+          const m = addr.match(/^([A-Z]+)(\d+)$/);
+          if (!m) return;
+          (rows[m[2]] = rows[m[2]] || []).push(String(v));
+        });
+        Object.keys(rows).forEach(rowNum => {
           units.push({
-            text: String(v), ref: name + "!" + addr, snippet: String(v).trim(),
-            snippetLabel: "cell " + name + "!" + addr
+            cells: rows[rowNum], ref: name + "!row" + rowNum,
+            snippet: rows[rowNum].join(" | "),
+            snippetLabel: "row " + name + "!" + rowNum
           });
         });
       });
@@ -641,10 +743,11 @@ function writeClipboard(text) {
 function checkBackend() {
   state.backend = "checking";
   renderVerify();
+  renderCrossRef();
   fetchWithTimeout(BACKEND_URL + "/health", {}, 1500)
     .then(r => { state.backend = r.ok ? "up" : "down"; })
     .catch(() => { state.backend = "down"; })
-    .finally(renderVerify);
+    .finally(() => { renderVerify(); renderCrossRef(); });
 }
 
 function runVerification() {
@@ -668,6 +771,7 @@ function runVerification() {
       state.verifying = false;
       state.backend = "down";
       renderVerify();
+      renderCrossRef();
     });
 }
 
@@ -677,9 +781,11 @@ function pollVerify(runId) {
     .then(data => {
       Object.assign(state.verify, data.results);
       renderVerify();
+      renderCrossRef();
       if (data.done) {
         state.verifying = false;
         renderVerify();
+        renderCrossRef();
       } else {
         setTimeout(() => pollVerify(runId), 800);
       }
@@ -687,6 +793,7 @@ function pollVerify(runId) {
     .catch(() => {
       state.verifying = false;
       renderVerify();
+      renderCrossRef();
     });
 }
 
@@ -736,6 +843,83 @@ function renderVerify() {
   }).join("");
 }
 
+// Every test target paired with the tag group (if any) whose own
+// size+variant name-hint matches it. A target with no match isn't an
+// error — it's telling you the sheet you uploaded doesn't cover that
+// creative, which is exactly the kind of gap this is meant to catch.
+function crossReference() {
+  return state.testTargets.map(t => {
+    const tag = state.groups.find(g => g.verifiable && g.nameHint
+      && g.nameHint.size === t.size && g.nameHint.variant === t.variant);
+    return Object.assign({}, t, { tag });
+  });
+}
+
+function runCrossCheck() {
+  const matches = crossReference().filter(m => m.tag);
+  if (!matches.length || state.verifying) return;
+
+  const targets = matches.map(m => ({ id: m.tid, platform: m.tag.platform, url: m.url, expected: m.tag.expected }));
+  state.verifying = true;
+  targets.forEach(t => { state.verify[t.id] = { status: "pending" }; });
+  renderCrossRef();
+
+  fetchWithTimeout(BACKEND_URL + "/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targets })
+  }, 5000)
+    .then(r => r.json())
+    .then(data => pollVerify(data.run_id))
+    .catch(() => {
+      state.verifying = false;
+      state.backend = "down";
+      render();
+    });
+}
+
+function renderCrossRef() {
+  if (state.phase !== "results") return;
+  const section = document.getElementById("crossRefSection");
+  section.hidden = !state.testTargets.length;
+  if (!state.testTargets.length) return;
+
+  const matches = crossReference();
+  const matched = matches.filter(m => m.tag);
+
+  const btn = document.getElementById("runCrossCheck");
+  btn.disabled = state.backend !== "up" || !matched.length || state.verifying;
+  btn.textContent = state.verifying ? "Verifying…" : "Verify matched targets (" + matched.length + ")";
+
+  document.getElementById("crossRefList").innerHTML = matches.map(m => {
+    if (!m.tag) {
+      return `
+        <div class="verify-row skip">
+          <span class="plat">${escapeHtml(m.size)}_${escapeHtml(m.variant)}</span>
+          <span class="u" title="${escapeHtml(m.url)}">${escapeHtml(m.url)}</span>
+          <span class="status-pill skip">no matching tag in uploaded data</span>
+        </div>`;
+    }
+    const v = state.verify[m.tid] || { status: "idle" };
+    const pillClass = ["pending", "running", "pass", "fail", "error"].includes(v.status) ? v.status : "pending";
+    const pillText = v.status === "idle" ? "not run" : v.status;
+    const expectStr = Object.entries(m.tag.expected).map(([k, val]) => k + "=" + val).join(" · ");
+    const observedRow = (v.status === "fail" || v.status === "pass") && v.observed
+      ? `<div class="verify-observed">expected from ${escapeHtml(m.tag.platform)} sheet: ${escapeHtml(expectStr)} — observed: ${escapeHtml(Object.entries(v.observed).map(([k, arr]) => k + "=[" + arr.join(",") + "]").join(" · ") || "none")}${v.detail ? " — " + escapeHtml(v.detail) : ""}</div>`
+      : v.status === "error" && v.detail
+      ? `<div class="verify-observed">${escapeHtml(v.detail)}</div>`
+      : "";
+    return `
+      <div class="verify-row">
+        <span class="plat">${escapeHtml(m.size)}_${escapeHtml(m.variant)}</span>
+        <span class="u" title="${escapeHtml(m.url)}">${escapeHtml(m.url)}</span>
+        <span class="status-pill ${pillClass}" title="expected: ${escapeHtml(expectStr)}">${escapeHtml(pillText)}</span>
+      </div>
+      ${observedRow ? `<div class="verify-row" style="grid-template-columns: 1fr;">${observedRow}</div>` : ""}
+    `;
+  }).join("");
+}
+
 function setMode(mode) {
   state.mode = mode;
   document.getElementById("tabPaste").classList.toggle("on", mode === "paste");
@@ -754,9 +938,10 @@ function renderPhase() {
     document.getElementById("parsingNote").textContent = s.parseNote;
   }
   if (s.phase === "empty") {
+    const last = s.sources[s.sources.length - 1];
     document.getElementById("emptyDetail").textContent =
-      (s.sourceLine ? "Read " + s.sourceLine + "." : "Input was read.") +
-      " Nothing matched Adform, CM360 or Ad Manager. Either these platforms aren't present, or the tag shape is one this version doesn't cover yet.";
+      (last ? "Read " + last.label + "." : "Input was read.") +
+      " Nothing matched Adform, CM360, Ad Manager, or a bare size/variant creative-preview URL. Either these shapes aren't present, or it's one this version doesn't cover yet.";
   }
 }
 
@@ -764,8 +949,11 @@ function renderResults() {
   const s = state;
   if (s.phase !== "results") return;
 
-  document.getElementById("resultHeadline").textContent = s.rows.length + " IDs across " + s.groups.length + " tag URLs";
-  document.getElementById("sourceLine").textContent = s.sourceLine;
+  document.getElementById("resultHeadline").textContent =
+    s.rows.length + " IDs across " + s.groups.length + " tag URLs"
+    + (s.testTargets.length ? " · " + s.testTargets.length + " test targets" : "");
+  document.getElementById("sourceLine").textContent =
+    s.sources.map(x => x.label).join("  +  ");
 
   const counts = { All: s.rows.length };
   s.rows.forEach(r => { counts[r.platform] = (counts[r.platform] || 0) + 1; });
@@ -813,6 +1001,7 @@ function render() {
   renderPhase();
   renderResults();
   renderVerify();
+  renderCrossRef();
 }
 
 document.getElementById("tabPaste").addEventListener("click", () => setMode("paste"));
@@ -833,6 +1022,8 @@ document.getElementById("dropzone").addEventListener("drop", (e) => {
 });
 
 document.getElementById("runVerify").addEventListener("click", runVerification);
+document.getElementById("runCrossCheck").addEventListener("click", runCrossCheck);
+document.getElementById("clearAll").addEventListener("click", clearAll);
 
 document.getElementById("copyAll").addEventListener("click", (e) => {
   writeClipboard(pythonList("All"));
