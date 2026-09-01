@@ -511,24 +511,46 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// Pulls {size, variant} out of a name-like string — a spreadsheet line-item
-// name ("sample_direct_120x600-Skyscrapper_..._blis-faul") or a bare
-// creative-preview URL path ("/120x600_faul/"). Both encode the same two
-// facts the same rough way: a WxH token, and a trailing variant word after
-// the last separator. That shared shape is what makes auto-matching them
-// against each other possible without knowing either source's exact schema.
+// Pulls {size, variant} out of a name-like string. Different exports put
+// these in different order — an Adform line-item name trails the variant
+// after a run of other tokens ("...120x600-Skyscrapper_..._blis-faul"),
+// while a WP.pl creName puts the variant immediately *before* the size
+// ("..._Hulajnoga_750x300") with nothing after it at all. Rather than
+// assume one order, take whichever of "last token overall" / "token right
+// before the size" isn't the size token itself — that covers both without
+// needing to know which convention produced the string.
 function parseSizeVariant(s) {
   if (!s) return null;
-  // No \b here: a boundary needs a word/non-word transition, and a size
-  // token is routinely followed directly by "_" or another digit run in
-  // both line-item names ("600_faul") and URL paths — both count as "word"
-  // characters, so \b would silently fail to match right after the digits.
-  const sizeM = s.match(/(\d{2,4}x\d{2,4})/i);
-  if (!sizeM) return null;
   const tokens = s.split(/[^a-z0-9]+/i).filter(Boolean);
-  const variant = tokens.length ? tokens[tokens.length - 1].toLowerCase() : null;
-  if (!variant || variant === sizeM[1].toLowerCase()) return null;
-  return { size: sizeM[1].toLowerCase(), variant };
+  const sizeIdx = tokens.findIndex(t => /^\d{2,4}x\d{2,4}$/i.test(t));
+  if (sizeIdx === -1) return null;
+  const size = tokens[sizeIdx].toLowerCase();
+  const last = tokens[tokens.length - 1];
+  const variant = last.toLowerCase() !== size ? last : (sizeIdx > 0 ? tokens[sizeIdx - 1] : null);
+  if (!variant) return null;
+  return { size, variant: variant.toLowerCase() };
+}
+
+// A test-target URL's {size, variant} can live in the path
+// (".../120x600_faul/") or inside one query-param's value
+// ("...&creName=..._Hulajnoga_750x300&...") — which one depends on the
+// publisher's own tooling, not anything this app controls. Try the path,
+// then each query value in turn, and use the first one that parses.
+function parseSizeVariantFromUrl(url) {
+  const [pathPart, queryPart] = url.split(/[?#]/);
+  const candidates = [pathPart];
+  if (queryPart) {
+    queryPart.split(/[&;]/).forEach(kv => {
+      const eq = kv.indexOf("=");
+      const raw = eq >= 0 ? kv.slice(eq + 1) : kv;
+      try { candidates.push(decodeURIComponent(raw)); } catch (e) { candidates.push(raw); }
+    });
+  }
+  for (const c of candidates) {
+    const r = parseSizeVariant(c);
+    if (r) return r;
+  }
+  return null;
 }
 
 const BACKEND_URL = "http://localhost:8877";
@@ -584,7 +606,7 @@ function extract(units, sourceLine) {
       const platform = platformOf(url);
 
       if (!platform) {
-        const tv = parseSizeVariant(url.split(/[?#]/)[0]);
+        const tv = parseSizeVariantFromUrl(url);
         if (!tv) return;
         const tKey = tv.size + "|" + tv.variant + "|" + url;
         if (state._seenTargets.has(tKey)) return;
