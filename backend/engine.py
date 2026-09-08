@@ -35,6 +35,7 @@ STATUS = {
     findings.MISSING: "fail",
     findings.WRONG_TAG: "fail",
     findings.INCONCLUSIVE: "error",
+    findings.UNATTRIBUTED: "fail",
 }
 
 DETAIL = {
@@ -42,6 +43,7 @@ DETAIL = {
     findings.IMPRESSION_ONLY: "impression fired, click never did",
     findings.MISSING: "expected tag never fired",
     findings.INCONCLUSIVE: "run did not complete",
+    findings.UNATTRIBUTED: "a tag fired, but nothing said which ID to expect — it may belong to another advertiser on the page",
 }
 
 
@@ -70,7 +72,12 @@ def _click_attempted(meta):
     get raised as defects. Watch mode exists for exactly these pages.
     """
     events = meta.get("events", []) or []
-    if any("click element at" in e for e in events):
+    # Any real attempt counts, whichever path made it. A run often tries the
+    # overlay first and only then falls through to a path that logs a skip;
+    # reading the skip and ignoring the attempt reported a click that did
+    # happen — and landed — as never tested.
+    if any(m in e for e in events
+           for m in ("click element at", "overlay click at", "model click at")):
         return True
     if any("click skipped" in e or "link click failed" in e for e in events):
         return False
@@ -78,6 +85,20 @@ def _click_attempted(meta):
 
 
 def _fired(meta):
+    """Beacons re-derived from the HAR, the same source the verdict uses.
+
+    The recorder's in-memory list misses requests made from a tab the click
+    opened — measured on kobieta.wp.pl, where the HAR holds three
+    `/C/?bn=89750126` requests that the recorder never saw. Reading the HAR
+    here means the table the UI draws and the verdict beside it cannot
+    disagree about whether the click fired.
+    """
+    har = Path(meta.get("_dir", ".")) / meta.get("har", "run.har")
+    if har.exists():
+        try:
+            return findings.beacons_from_har(har)
+        except Exception:
+            pass
     return [b for b in meta.get("beacons", []) if b.get("evidence") == "fired"]
 
 
