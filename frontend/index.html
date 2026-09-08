@@ -136,7 +136,14 @@
   .headline-lg { font-family: var(--font-heading); font-weight: 800; font-size: 28px; letter-spacing: -.015em; }
   #parsingNote { font-family: var(--font-mono); font-size: 12.5px; color: var(--color-neutral-700); margin-top: var(--space-3); }
   .progress-track { height: 6px; background: var(--color-neutral-300); overflow: hidden; margin-top: var(--space-3); }
-  .progress-fill { height: 100%; width: 45%; background: var(--color-accent); }
+  /* Indeterminate on purpose. This was a fixed 45% that never moved, which
+     claimed to know a progress figure nothing here measures. */
+  .progress-fill { height: 100%; width: 35%; background: var(--color-accent);
+                   animation: progress-sweep 1.1s ease-in-out infinite; }
+  @keyframes progress-sweep { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-fill { animation: none; width: 100%; }
+  }
 
   #emptyDetail { font-size: 13.5px; max-width: 62ch; color: var(--color-neutral-800); margin-top: var(--space-3); }
   .supported-line {
@@ -221,6 +228,10 @@
   .verify-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-6); flex-wrap: wrap; margin-bottom: var(--space-4); }
   .verify-head .headline-md { font-family: var(--font-heading); font-weight: 800; font-size: 18px; letter-spacing: -.01em; }
   .verify-head .desc { font-size: 12.5px; color: var(--color-neutral-700); max-width: 60ch; margin-top: 4px; }
+  .btn-mini { font-size: 11px; padding: 3px 9px; margin-left: var(--space-2);
+              border: 1px solid var(--color-neutral-400); background: #fff; cursor: pointer;
+              font-family: var(--font-mono); }
+  .btn-mini:hover { border-color: var(--color-accent); color: var(--color-accent-700); }
   .btn-outline {
     padding: 10px var(--space-4); background: transparent; color: var(--color-text);
     border: 2px solid var(--color-text); font-family: var(--font-body); font-weight: 600;
@@ -230,6 +241,12 @@
   .btn-outline:disabled { opacity: .4; cursor: not-allowed; }
   .backend-hint { font-size: 12px; color: var(--color-neutral-600); margin-top: var(--space-2); }
   .backend-hint code { font-family: var(--font-mono); }
+  .backend-hint label { display: block; font-size: 10px; letter-spacing: .1em;
+                        text-transform: uppercase; margin-bottom: 3px; }
+  .backend-hint input { font-family: var(--font-mono); font-size: 12px; padding: 4px 6px;
+                        border: 1px solid var(--color-neutral-400); background: #fff; }
+  /* A run that failed has something to say; it should not read like a hint. */
+  .backend-hint.err { color: var(--status-fail); }
 
   .verify-list { display: flex; flex-direction: column; border: 2px solid var(--color-text); }
   .verify-row {
@@ -251,6 +268,10 @@
   .status-pill.fail { color: var(--status-fail); background: var(--status-fail-bg); }
   .status-pill.error { color: var(--status-error); background: var(--status-error-bg); }
   .status-pill.skip { color: var(--color-neutral-600); background: var(--color-neutral-200); }
+  /* Half a result: the impression fired but the click never did. Painting it
+     the same red as "no tag fired" hides which half is missing, and the two
+     go to different people to fix. */
+  .status-pill.warn { color: var(--status-error); background: var(--status-error-bg); }
   .verify-observed { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-700); margin-top: -2px; }
 
   .vendor-picker { display: flex; flex-wrap: wrap; gap: var(--space-2); }
@@ -279,6 +300,35 @@
     background: var(--color-neutral-200); color: var(--color-neutral-800);
   }
   .chip-found.main { background: var(--color-accent-100); color: var(--color-accent-700); }
+  .kind { margin-left: 5px; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+          padding: 1px 4px; border-radius: 2px; }
+  .kind.on { background: var(--status-pass-bg); color: var(--status-pass); }
+  .kind.off { background: var(--status-fail-bg); color: var(--status-fail);
+              text-decoration: line-through; }
+  .kind.unknown { background: var(--color-neutral-200); color: var(--color-neutral-700); }
+  /* Present in the page source but never actually requested. On a live page
+     that markup is very often a different advertiser's, so it must never look
+     like a tag that fired. */
+  .chip-found.markup { background: transparent; color: var(--color-neutral-600);
+                       border: 1px dashed var(--color-neutral-400); }
+  .match-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .match-table th { text-align: left; padding: var(--space-2) var(--space-3);
+                    font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
+                    text-transform: uppercase; background: var(--color-neutral-800);
+                    color: #fff; white-space: nowrap; }
+  .match-table td { padding: var(--space-2) var(--space-3); vertical-align: top;
+                    border-bottom: 1px solid var(--color-neutral-200); }
+  .match-table tr.row-bad td { background: var(--status-fail-bg); }
+  .match-table .m-desc { font-weight: 600; }
+  .match-table .m-url { display: block; font-family: var(--font-mono); font-size: 11px;
+                        color: var(--color-neutral-700); overflow-wrap: anywhere; }
+  .match-table .m-ids, .match-table .m-sheet {
+      font-family: var(--font-mono); font-size: 11.5px; overflow-wrap: anywhere; }
+  .match-table .m-kind { text-align: center; }
+  .match-table tr.pub-row td { background: var(--color-neutral-200); font-weight: 700;
+                               font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .match-table .pub-count { font-family: var(--font-mono); font-weight: 400;
+                            color: var(--color-neutral-700); margin-left: var(--space-2); }
   .match-detail { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 11px;
     color: var(--color-neutral-700); padding-left: var(--space-3); }
   .match-detail .ok { color: var(--status-pass); }
@@ -368,7 +418,7 @@
   <section class="phase" id="emptySection" hidden>
     <div class="headline-lg">No tags recognized</div>
     <div id="emptyDetail"></div>
-    <div class="supported-line">Supported: adfserve/adform.net/C/ · ad.doubleclick.net/ddm/trackimp|trackclk · google_preview + gdfp_req query strings</div>
+    <div class="supported-line">Supported: adfserve/adform.net/C/ · ad.doubleclick.net/ddm/trackimp|trackclk · abtshield.com · doubleverify.com · google_preview + gdfp_req query strings</div>
   </section>
 
   <section class="phase" id="resultsSection" hidden>
@@ -452,6 +502,20 @@
       <div class="verify-list" id="verifyList"></div>
     </div>
 
+    <div class="verify-section" id="pairSection" hidden>
+      <div class="verify-head">
+        <div>
+          <div class="headline-md">0 &nbsp;·&nbsp; Pair test URLs with the sheet</div>
+          <div class="desc">Works out which sheet row each test URL is meant to carry. Clear cases are settled by name scoring; only what that cannot settle is put to a model, which is allowed to decline. Every suggestion needs your acceptance — and none of this decides whether a tag fired, only what to expect.</div>
+        </div>
+        <div>
+          <button type="button" class="btn-outline" id="runPair" disabled>Pair with sheet</button>
+          <div class="backend-hint" id="pairHint"></div>
+        </div>
+      </div>
+      <div class="verify-list" id="pairList"></div>
+    </div>
+
     <div class="verify-section" id="scanSection" hidden>
       <div class="verify-head">
         <div>
@@ -460,6 +524,16 @@
         </div>
         <div>
           <button type="button" class="btn-outline" id="runScan" disabled>Scan test pages</button>
+          <div class="backend-hint">
+            <label for="advertiser">advertiser</label>
+            <input id="advertiser" type="text" list="advertisers" placeholder="e.g. FuelClient" size="22">
+            <datalist id="advertisers">
+              <option value="BankClient"></option>
+              <option value="FuelClient"></option>
+              <option value="RetailClient"></option>
+            </datalist>
+            <div>Named so a page carrying several advertisers can be told apart. Leave empty and the tool will not guess which creative is yours.</div>
+          </div>
           <div class="backend-hint" id="scanHint"></div>
         </div>
       </div>
@@ -488,7 +562,7 @@
   </section>
 
   <footer class="bottom">
-    <span>Extraction only — no browser is opened, no request is made to a publisher</span>
+    <span>Extraction is client-side — Verify and Scan open a browser on the backend and load the page</span>
     <span>No accounts · no saved history · read-and-copy</span>
   </footer>
 </main>
@@ -499,24 +573,32 @@
 const URL_RE = /https?:\/\/[^\s"'<>)\]]+/g;
 const SAMPLE = `Hej,
 
-poniżej tagi do weryfikacji — Linia3 / Linia4, proszę o desktop i mobile.
+prevki od kreacji do akceptu — RetailClient, wrzesniowa odslona.
 
-Screening desktop:
-https://www.eska.pl/news/?google_preview=PLACEHOLDER&iu=1014333&gdfp_req=1&lineItemId=9000000125&creativeId=900000027674
-Screening mobile top:
-https://www.eska.pl/?force_mobile=1&google_preview=PLACEHOLDER&iu=1014333&gdfp_req=1&lineItemId=9000000125&creativeId=900000027641
-Floorad desktop:
-https://www.eska.pl/news/?google_preview=PLACEHOLDER&iu=1014333&gdfp_req=1&lineItemId=9000000396&creativeId=900000042591
+DIS_2026-09-04_oferta_300x250_v1
 
-Adform (moto.pl branding):
-imp: https://track.adform.net/adfserve/?bn=88915001&1x1inv=1&crtbwp=x
-klik: https://track.adform.net/C/?bn=88915001&cpdir=
+https://displayvideo.google.com/doubleclick/preview/main?creativeId=xbid.746249724&eftd=1&flexHeight=250&flexWidth=300
 
-CM360 (HVP):
-https://ad.doubleclick.net/ddm/trackimp/N90000001.900000002/B900000003.900000004;dc_trk_aid=900000001;dc_trk_cid=900000002;ord=1
-https://ad.doubleclick.net/ddm/trackclk/N90000001.900000002/B900000003.900000004;dc_trk_aid=900000001;dc_trk_cid=900000002
+DIS_2026-09-04_oferta_750x200_v1
 
-Dzięki, daj znać jak coś nie pyka.`;
+https://displayvideo.google.com/doubleclick/preview/main?creativeId=xbid.746249151&eftd=1&flexHeight=200&flexWidth=750
+
+DIS_2026-09-04_oferta-mlody_300x600_v1
+
+https://displayvideo.google.com/doubleclick/preview/main?creativeId=xbid.746258609&eftd=1&flexHeight=600&flexWidth=300
+
+
+Od wydawcy, strony testowe z wpietymi tagami:
+
+double_wideboard_1075763_527115
+https://businessinsider.com.pl/#adbeta=r151799!slot.top
+
+rectangle_e2e_1075763_527115
+https://businessinsider.com.pl/?ress=mobile#adbeta=r151795!slot.top
+
+https://wiadomosci.wp.pl?wfName=281086_3065732_RetailClient_dniowka_01&creName=970_300_desktop&testPos=3
+
+Dzieki, daj znac jak cos nie pyka.`;
 
 function clean(u) {
   return u.replace(/&amp;/g, "&").replace(/&#0?38;/g, "&").replace(/[;,.)\]]+$/, "");
@@ -535,6 +617,25 @@ const VENDOR_ROLE = {
   "Adform": "serving", "CM360": "serving",
   "ABT Shield": "measurement", "DoubleVerify": "measurement",
 };
+// The engine's verdicts, and how each should read. "impression only" and
+// "wrong tag" are both failures, but of different kinds and for different
+// people — the first is usually a click tag that was never implemented, the
+// second is the right slot running somebody else's tag.
+const VERDICT = {
+  pass:            { cls: "pass",  text: "pass" },
+  impression_only: { cls: "warn",  text: "impression only" },
+  missing:         { cls: "fail",  text: "no tag fired" },
+  wrong_tag:       { cls: "fail",  text: "WRONG TAG in slot" },
+  inconclusive:    { cls: "error", text: "inconclusive" },
+};
+
+// Vendors whose ID is fixed for the advertiser rather than per placement.
+// ABT Shield keys off an order id (impression 975868942, click 237250412)
+// that is the same on every BankClient placement, so looking it up in a trafficking
+// sheet can only ever say "not in sheet" — a mismatch manufactured from a
+// question that does not apply. For these, firing at all is the finding.
+const FIXED_ID_VENDORS = ["ABT Shield"];
+
 // Which discovered field carries the identity worth matching per vendor.
 const MATCH_FIELDS = {
   "Adform": ["bn"],
@@ -603,9 +704,73 @@ function escapeHtml(s) {
 // assume one order, take whichever of "last token overall" / "token right
 // before the size" isn't the size token itself — that covers both without
 // needing to know which convention produced the string.
+// Publishers write the format with whatever separator their CMS uses: one
+// sends `970x300`, the next `970_300`. Normalise before tokenising — but only
+// for pairs that could plausibly be an ad size, or a campaign id like
+// `281086_3065732` or a date like `2026_09` would be read as a format.
+function normaliseSizes(s) {
+  return (s || "").replace(/(?<!\d)(\d{2,4})[_-](\d{2,4})(?!\d)/g, (m, a, b) =>
+    (+a >= 20 && +a <= 2000 && +b >= 20 && +b <= 2000) ? a + "x" + b : m);
+}
+
+// Publisher preview links name the creative in their own vocabulary and often
+// carry no size at all (`creName=giga_desktop`). They are still test targets:
+// dropping them means the live pages most in need of checking are exactly the
+// ones that vanish without a word.
+const PREVIEW_MARKERS = [
+  "wfname=", "adbeta=", "live_preview_config", "/doubleclick/preview/",
+  "creativeid=xbid.", "preview.adnami.io",
+  // Written `google_preview%3D` when it rides inside another URL's redirect
+  // parameter, so match the key alone rather than key-and-equals.
+  "google_preview",
+  "preview_cookie",        // GAM's own cookie-setting preview link
+  "adocean.pl",            // TVN and others hand out adocean readredir links
+  "/gampad/preview",
+];
+
+function previewVariant(url) {
+  // Publishers nest one URL inside another, which percent-encodes the marker
+  // out of reach: a TVP link carries `google_preview%3D…` inside its redirect
+  // parameter, and matching the raw string alone missed it entirely.
+  let decoded = url;
+  try { decoded = decodeURIComponent(url); } catch (e) { /* malformed escape */ }
+  const low = (url + " " + decoded).toLowerCase();
+  if (!PREVIEW_MARKERS.some(m => low.includes(m))) return null;
+  // creName first, and not just because it reads better: it names the
+  // creative, while wfName names the whole campaign workflow and is the
+  // same across every format in it. An alternation would take whichever
+  // appears first in the URL, which is wfName.
+  const m = url.match(/[?&]creName=([^&#]+)/i) || url.match(/[?&]wfName=([^&#]+)/i);
+  let raw = "preview";
+  if (m) { try { raw = decodeURIComponent(m[1]); } catch (e) { raw = m[1]; } }
+  return raw.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 44)
+         || "preview";
+}
+
+// A preview link may carry no size, so join only the parts that exist —
+// otherwise the row reads "_giga-desktop".
+function targetLabel(t) {
+  return [t.size, t.variant].filter(Boolean).join("_") || t.url.slice(0, 60);
+}
+
+// The line item's own name, and nothing else. `nameSource` glues every
+// name-like cell together, so the sheet column read
+// "WP.pl Wp_direct_970x300-MegaDoubleBillboard_FIX_PCC_Bkm-wiz" — the media
+// name repeated in front of the only part anyone needs.
+function lineItemName(cells) {
+  const named = (cells || []).map(c => String(c).trim())
+    .filter(c => c && !/https?:\/\//i.test(c) && !/[<>]/.test(c));
+  // A line item name carries the format and the underscore-joined shape the
+  // trafficking convention uses; prefer that over a bare publisher cell.
+  const shaped = named.filter(c => /\d{2,4}\s*[x_-]\s*\d{2,4}/.test(c) && /[_-]/.test(c));
+  const pick = (shaped.length ? shaped : named)
+    .sort((a, b) => b.length - a.length)[0];
+  return pick ? pick.replace(/\s+/g, " ").slice(0, 120) : null;
+}
+
 function parseSizeVariant(s) {
   if (!s) return null;
-  const tokens = s.split(/[^a-z0-9]+/i).filter(Boolean);
+  const tokens = normaliseSizes(s).split(/[^a-z0-9]+/i).filter(Boolean);
   const sizeIdx = tokens.findIndex(t => /^\d{2,4}x\d{2,4}$/i.test(t));
   if (sizeIdx === -1) return null;
   const size = tokens[sizeIdx].toLowerCase();
@@ -622,7 +787,13 @@ function parseSizeVariant(s) {
 // then each query value in turn, and use the first one that parses.
 function parseSizeVariantFromUrl(url) {
   const [pathPart, queryPart] = url.split(/[?#]/);
+  // DV360 preview links state the format outright — just as two parameters
+  // rather than one `480x320` token, so nothing matched and every creative
+  // came through sizeless.
+  const fw = url.match(/[?&]flexWidth=(\d{2,4})/i);
+  const fh = url.match(/[?&]flexHeight=(\d{2,4})/i);
   const candidates = [pathPart];
+  if (fw && fh) candidates.unshift(fw[1] + "x" + fh[1] + " preview");
   if (queryPart) {
     queryPart.split(/[&;]/).forEach(kv => {
       const eq = kv.indexOf("=");
@@ -651,8 +822,16 @@ const state = {
   backend: "unknown", // unknown | checking | up | down
   verify: {},          // id (gN or tN) -> {status, observed, expected}
   verifying: false,
+  runError: "",        // why the last verify run stopped, if it did
+  pair: {},            // tid -> match entry, plus `accepted`
+  pairing: false,
+  pairError: "",
+  modelUsed: null,
   scan: {},            // tid -> {status, vendors:{vendor:{field:[values]}}}
   scanning: false,
+  scanError: "",
+  scanRunId: null,     // needed to tell the backend a watch is finished
+  watchIds: [],        // rows the browser has been handed over for
   selectedVendors: new Set(),
   vendorTouched: false, // once the user picks, stop auto-selecting
   _seenRows: new Set(),
@@ -694,13 +873,29 @@ function extract(units, sourceLine) {
       const platform = platformOf(url);
 
       if (!platform) {
-        const tv = parseSizeVariantFromUrl(url);
-        if (!tv) return;
+        if (unit.isSheet) return;      // sheets book placements, they do not test them
+        // The name the email gave this creative beats anything derivable from
+        // the link. `DIS_2026-09-04_oferta-mlody_300x250_v1` says which
+        // variant it is; the URL can only ever yield the format and the word
+        // "preview", which makes twenty-two rows look identical.
+        let tv = nameHint || parseSizeVariantFromUrl(url);
+        if (!tv) {
+          // No parsable format, but unmistakably a publisher preview link.
+          // Keep it: the size can be confirmed from the page itself, whereas
+          // a silently discarded URL cannot be checked at all.
+          const variant = previewVariant(url);
+          if (!variant) return;
+          tv = { size: "", variant };
+        }
         const tKey = tv.size + "|" + tv.variant + "|" + url;
         if (state._seenTargets.has(tKey)) return;
         state._seenTargets.add(tKey);
         state.testTargets.push({
           tid: "t" + state.testTargets.length, url, size: tv.size, variant: tv.variant,
+          // What the email called this creative, kept verbatim. The parsed
+          // size and variant are for matching; this is what a person reads to
+          // check the verdict against the mail they were sent.
+          desc: (nameSource || "").replace(/\s+/g, " ").trim().slice(0, 90),
           source: unit.ref, snippet: unit.snippet || fullText, snippetLabel: unit.snippetLabel
         });
         addedTargets++;
@@ -710,10 +905,16 @@ function extract(units, sourceLine) {
       const fields = fieldsOf(url, platform);
       if (!fields.length) return;
 
+      // MATCH_FIELDS names what identifies each vendor, and Step 3 matches on
+      // exactly that — so every vendor listed there has to reach `expected`.
+      // Filling it for the two serving vendors only meant sheetIndex() never
+      // grew an "ABT Shield" or "DoubleVerify" key, and every measurement tag
+      // found on a page came back "not in sheet" even when the sheet had it.
+      // That is a confident false alarm, which is worse than a missing check.
+      const matchFields = MATCH_FIELDS[platform] || [];
       const expected = {};
       fields.forEach(([key, , value]) => {
-        if (platform === "Adform" && key === "bn") expected.bn = value;
-        if (platform === "CM360" && (key === "dc_trk_aid" || key === "dc_trk_cid")) expected[key] = value;
+        if (matchFields.includes(key)) expected[key] = value;
       });
       const verifiable = platform === "Adform" ? !!expected.bn
         : platform === "CM360" ? !!(expected.dc_trk_aid && expected.dc_trk_cid)
@@ -735,7 +936,11 @@ function extract(units, sourceLine) {
       const gid = "g" + state.groups.length;
       state.groups.push({
         gid, platform, label: platform + " " + counters[platform],
-        primary: primaryOf(platform, fields), url, expected, verifiable, nameHint
+        primary: primaryOf(platform, fields), url, expected, verifiable, nameHint,
+        // The row's own wording. parseSizeVariant() reduces it to a size and a
+        // variant, which is all the vendor match needs — but pairing against an
+        // email works on the words themselves, so keep them.
+        rowName: lineItemName(cells) || nameSource.replace(/\s+/g, " ").trim().slice(0, 200)
       });
       addedTags++;
 
@@ -756,12 +961,21 @@ function extract(units, sourceLine) {
 }
 
 function clearAll() {
+  // Cancels anything in flight. A poll that outlives the reset would write
+  // its results onto the next session's groups, which reuse the same ids.
+  runToken++;
   state.rows = []; state.groups = []; state.testTargets = []; state.sources = [];
   state.filter = "All"; state.verify = {}; state.verifying = false; state.phase = "idle";
   state.scan = {}; state.scanning = false;
+  state.runError = ""; state.scanError = ""; state.parseNote = "";
+  state.pair = {}; state.pairing = false; state.pairError = ""; state.modelUsed = null;
+  state.scanRunId = null; state.watchIds = [];
   state.selectedVendors.clear(); state.vendorTouched = false;
   state._seenRows.clear(); state._seenTargets.clear();
   document.getElementById("pasteInput").value = "";
+  // Without this, re-picking the *same* file fires no change event and the
+  // upload silently does nothing.
+  document.getElementById("fileInput").value = "";
   render();
 }
 
@@ -769,10 +983,34 @@ function runPaste() {
   const text = document.getElementById("pasteInput").value || "";
   if (!text.trim()) return;
   const lines = text.split(/\r?\n/);
-  const units = lines.map((line, i) => ({
-    text: line, ref: "line " + (i + 1), snippet: line.trim(),
-    snippetLabel: "pasted text · line " + (i + 1)
-  }));
+  // Emails name each creative on the line above its link:
+  //
+  //     DIS_2026-09-04_oferta-mlody_300x250_v1
+  //     https://displayvideo.google.com/doubleclick/preview/main?creativeId=…
+  //
+  // Read line by line, the name lands in a unit with no URL and the URL in a
+  // unit with no name, so every row came out labelled "preview" and the
+  // format was lost. Carry the nearest preceding label down onto the link.
+  const isUrlOnly = (l) => /^\s*https?:\/\/\S+\s*$/.test(l);
+  const looksLikeName = (l) => {
+    const t = l.trim();
+    return !!t && t.length < 120 && !/https?:\/\//.test(t) && !/[<>]/.test(t) && /[a-z]/i.test(t);
+  };
+  const units = lines.map((line, i) => {
+    let label = "";
+    if (isUrlOnly(line)) {
+      for (let j = i - 1; j >= 0 && i - j <= 3; j--) {
+        if (looksLikeName(lines[j])) { label = lines[j].trim(); break; }
+        if (lines[j].trim()) break;      // something else sits in between
+      }
+    }
+    return {
+      text: label ? label + " " + line : line,
+      ref: "line " + (i + 1),
+      snippet: (label ? label + "\n" : "") + line.trim(),
+      snippetLabel: "pasted text · line " + (i + 1)
+    };
+  });
   extract(units, "pasted text · " + lines.length + " lines · " + text.length.toLocaleString() + " chars");
 }
 
@@ -789,15 +1027,29 @@ function onFile(file) {
   state.phase = "parsing";
   state.parseNote = "reading " + file.name + " — " + Math.round(file.size / 1024) + " KB";
   render();
+  const fail = (msg) => {
+    // This used to return silently, so a corrupt file — or a blocked CDN,
+    // which is common enough given the README says to open this over file://
+    // — looked exactly like a click that did nothing at all.
+    state.parseNote = msg;
+    state.phase = state.rows.length || state.testTargets.length ? "results" : "empty";
+    render();
+  };
+
   const reader = new FileReader();
+  reader.onerror = () => fail("could not read " + file.name);
   reader.onload = (ev) => {
-    setTimeout(() => {
+    {
       let wb;
+      if (!window.XLSX) {
+        fail("spreadsheet reader did not load — check the connection to cdn.sheetjs.com, "
+             + "or paste the tags instead");
+        return;
+      }
       try {
         wb = window.XLSX.read(new Uint8Array(ev.target.result), { type: "array" });
       } catch (err) {
-        state.phase = state.rows.length || state.testTargets.length ? "results" : "empty";
-        render();
+        fail("could not read " + file.name + " as a spreadsheet: " + (err && err.message || err));
         return;
       }
       // Grouped by row, not by cell: a trafficking sheet's tag URL and the
@@ -826,12 +1078,18 @@ function onFile(file) {
           units.push({
             cells: rows[rowNum], ref: name + "!row" + rowNum,
             snippet: rows[rowNum].join(" | "),
-            snippetLabel: "row " + name + "!" + rowNum
+            snippetLabel: "row " + name + "!" + rowNum,
+            // A trafficking sheet states what is *booked*; the pages to test
+            // come from the email. Without this flag the landing pages in the
+            // sheet's click-through column were taken as test targets —
+            // dozens of rows all pointing at the same advertiser page, none
+            // of them a test.
+            isSheet: true
           });
         });
       });
       extract(units, file.name + " · " + wb.SheetNames.length + " sheet(s) · " + cells.toLocaleString() + " cells scanned");
-    }, 900);
+    }
   };
   reader.readAsArrayBuffer(file);
 }
@@ -852,14 +1110,113 @@ function writeClipboard(text) {
   }
 }
 
+// ── backend transport ───────────────────────────────────────────────────
+// Every backend call goes through here. Three things were missing, and each
+// had its own silent failure mode: an HTTP error status read as success (a
+// 400 became a run_id of `undefined`, then polled forever), a single dropped
+// poll ending the run for good, and no way to cancel a run in flight.
+
+function apiFetch(path, opts, ms) {
+  return fetchWithTimeout(BACKEND_URL + path, opts, ms).then(
+    r => r.json().catch(() => ({})).then(body => {
+      if (!r.ok) {
+        const err = new Error(body.error || ("HTTP " + r.status));
+        err.reachable = true;          // it answered, so it is running
+        err.status = r.status;
+        err.rejected = body.rejected || [];
+        throw err;
+      }
+      return body;
+    }),
+    () => {
+      const err = new Error("backend unreachable");
+      err.reachable = false;
+      throw err;
+    }
+  );
+}
+
+const apiGet = (path, ms) => apiFetch(path, {}, ms || 8000);
+const apiPost = (path, payload, ms) => apiFetch(path, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(payload)
+}, ms || 8000);
+
+// Only an unreachable backend means "not running". An HTTP error means it is
+// running and told us something — flipping the status to "down" there buries
+// the actual message under "start it: cd backend" and sends the user after
+// the wrong problem.
+function noteApiError(err) {
+  if (!err.reachable) state.backend = "down";
+  return err.message;
+}
+
+// Bumped to cancel whatever is in flight; clearAll() does exactly that.
+// Without it, a poll scheduled before the reset still fires afterwards and
+// writes stale results onto freshly renumbered groups, because gid restarts
+// at "g0".
+let runToken = 0;
+
+function pollRun(path, runId, token, onData, onEnd, intervalMs) {
+  let misses = 0;
+  const tick = () => {
+    if (token !== runToken) return;
+    apiGet(path + "/" + runId)
+      .then(data => {
+        if (token !== runToken) return;
+        misses = 0;
+        onData(data);
+        if (data.done) onEnd(data.error || null);
+        else setTimeout(tick, intervalMs);
+      })
+      .catch(err => {
+        if (token !== runToken) return;
+        // A worker holding the GIL while Playwright drives a page can cost us
+        // a poll or two. Losing one tick is not losing the run.
+        if (!err.reachable && ++misses <= 4) {
+          setTimeout(tick, intervalMs * misses);
+          return;
+        }
+        onEnd(noteApiError(err));
+      });
+  };
+  tick();
+}
+
+// Drawn on every phase, not just "results" — otherwise the header sits on its
+// hardcoded "checking…" until the first successful extraction, which is not
+// what the README promises.
+function renderBackendStatus() {
+  const dot = document.getElementById("backendDot");
+  const label = document.getElementById("backendLabel");
+  if (!dot || !label) return;
+  dot.className = "backend-dot" + (state.backend === "up" ? " up" : state.backend === "down" ? " down" : "");
+  label.textContent = "backend: " + ({ up: "ready", checking: "checking…", down: "not running" }[state.backend] || "unknown");
+  label.title = state.backend === "up" ? "" : "click to re-check";
+}
+
 function checkBackend() {
+  if (state.backend === "checking") return Promise.resolve();
   state.backend = "checking";
-  renderVerify();
-  renderScan(); renderVendors(); renderMatch();
-  fetchWithTimeout(BACKEND_URL + "/health", {}, 1500)
-    .then(r => { state.backend = r.ok ? "up" : "down"; })
+  renderBackendStatus();
+  // 1.5s was too tight: a Flask that has just imported Playwright routinely
+  // misses it, and both buttons then stay locked for the rest of the session.
+  return apiGet("/health", 4000)
+    .then(() => { state.backend = "up"; })
     .catch(() => { state.backend = "down"; })
-    .finally(() => { renderVerify(); renderScan(); renderVendors(); renderMatch(); });
+    .finally(() => {
+      renderBackendStatus();
+      renderVerify(); renderScan(); renderVendors(); renderMatch();
+    });
+}
+
+// A target the backend refused used to vanish from results entirely, leaving
+// its row pending forever with nothing to account for it.
+function applyRejected(store, rejected) {
+  (rejected || []).forEach(r => {
+    if (r.id) store[r.id] = { status: "error", detail: r.reason };
+  });
 }
 
 function runVerification() {
@@ -868,50 +1225,32 @@ function runVerification() {
     .map(g => ({ id: g.gid, platform: g.platform, url: g.url, expected: g.expected }));
   if (!targets.length || state.verifying) return;
 
+  const token = ++runToken;
   state.verifying = true;
+  state.runError = "";
   targets.forEach(t => { state.verify[t.id] = { status: "pending" }; });
   renderVerify();
 
-  fetchWithTimeout(BACKEND_URL + "/verify", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targets })
-  }, 5000)
-    .then(r => r.json())
-    .then(data => pollVerify(data.run_id))
-    .catch(() => {
-      state.verifying = false;
-      state.backend = "down";
-      renderVerify();
-    });
-}
-
-function pollVerify(runId) {
-  fetchWithTimeout(BACKEND_URL + "/verify/" + runId, {}, 5000)
-    .then(r => r.json())
+  apiPost("/verify", { targets })
     .then(data => {
-      Object.assign(state.verify, data.results);
+      applyRejected(state.verify, data.rejected);
       renderVerify();
-      if (data.done) {
-        state.verifying = false;
-        renderVerify();
-      } else {
-        setTimeout(() => pollVerify(runId), 800);
-      }
+      pollRun("/verify", data.run_id, token,
+        d => { Object.assign(state.verify, d.results); renderVerify(); },
+        err => { state.verifying = false; state.runError = err || ""; renderVerify(); },
+        800);
     })
-    .catch(() => {
+    .catch(err => {
       state.verifying = false;
+      state.runError = noteApiError(err);
+      applyRejected(state.verify, err.rejected);
       renderVerify();
     });
 }
 
 function renderVerify() {
+  renderBackendStatus();
   if (state.phase !== "results") return;
-
-  const dot = document.getElementById("backendDot");
-  const label = document.getElementById("backendLabel");
-  dot.className = "backend-dot" + (state.backend === "up" ? " up" : state.backend === "down" ? " down" : "");
-  label.textContent = "backend: " + (state.backend === "up" ? "ready" : state.backend === "checking" ? "checking…" : state.backend === "down" ? "not running" : "unknown");
 
   // Once there are test-URL targets to check against, self-checking every
   // sheet tag against its own URL isn't the useful question anymore — it's
@@ -925,7 +1264,9 @@ function renderVerify() {
   runBtn.textContent = state.verifying ? "Verifying…" : "Run verification";
 
   const hint = document.getElementById("backendHint");
-  hint.textContent = state.backend === "up" ? "" : "start it: cd backend && python app.py";
+  hint.textContent = state.runError ? state.runError
+    : state.backend === "up" ? "" : "start it: cd backend && python app.py";
+  hint.classList.toggle("err", !!state.runError);
 
   const list = document.getElementById("verifyList");
   list.innerHTML = state.groups.map(g => {
@@ -938,11 +1279,18 @@ function renderVerify() {
         </div>`;
     }
     const v = state.verify[g.gid] || { status: "idle" };
-    const pillClass = ["pending", "running", "pass", "fail", "error"].includes(v.status) ? v.status : "pending";
-    const pillText = v.status === "idle" ? "not run" : v.status;
+    const verd = VERDICT[v.verdict];
+    // The engine's verdict is finer-grained than the five statuses this UI
+    // was built around: "impression only" and "wrong tag in slot" both arrive
+    // as status "fail", and collapsing them loses the distinction the whole
+    // tool exists to draw. Prefer the verdict when the backend sends one.
+    const pillClass = verd ? verd.cls
+      : ["pending", "running", "pass", "fail", "error"].includes(v.status) ? v.status : "pending";
+    const pillText = verd ? verd.text : v.status === "idle" ? "not run" : v.status;
     const expectStr = Object.entries(g.expected).map(([k, val]) => k + "=" + val).join(" · ");
+    const meta = [v.strategy, v.duration_s ? v.duration_s + "s" : null].filter(Boolean).join(" · ");
     const observedRow = (v.status === "fail" || v.status === "pass") && v.observed
-      ? `<div class="verify-observed">observed: ${escapeHtml(Object.entries(v.observed).map(([k, arr]) => k + "=[" + arr.join(",") + "]").join(" · ") || "none")}${v.detail ? " — " + escapeHtml(v.detail) : ""}</div>`
+      ? `<div class="verify-observed">observed: ${escapeHtml(Object.entries(v.observed).map(([k, arr]) => k + "=[" + arr.join(",") + "]").join(" · ") || "none")}${v.detail ? " — " + escapeHtml(v.detail) : ""}${meta ? ` <span class="label-sm">(${escapeHtml(meta)})</span>` : ""}</div>`
       : v.status === "error" && v.detail
       ? `<div class="verify-observed">${escapeHtml(v.detail)}</div>`
       : "";
@@ -957,52 +1305,173 @@ function renderVerify() {
   }).join("");
 }
 
-// ── Step 1: scan ────────────────────────────────────────────────────────
+// ── Step 0: pair test URLs with sheet rows ──────────────────────────────
+// Which sheet row is each test URL supposed to carry? Name scoring settles
+// most of it; the backend puts the rest to a model that may decline. Nothing
+// is adopted until a person accepts it — a wrong pairing here would silently
+// invalidate every verdict downstream, which has happened before.
 
-function runScan() {
-  const targets = state.testTargets.map(t => ({ id: t.tid, url: t.url }));
-  if (!targets.length || state.scanning) return;
+// Watch mode hands the browser to a person; this hands it back. Over HTTP
+// there is no Ctrl+C, so without this the run could only end by timing out.
+function endWatch() {
+  if (!state.scanRunId) return;
+  apiPost("/watch/" + encodeURIComponent(state.scanRunId) + "/done", {}, 15000)
+    .then(() => { state.watchIds = []; renderScan(); })
+    .catch(err => { state.scanError = noteApiError(err); renderScan(); });
+}
 
-  state.scanning = true;
-  targets.forEach(t => { state.scan[t.id] = { status: "pending" }; });
-  renderScan();
+function pairInputs() {
+  // Give both sides real words. A test URL's own path usually names the
+  // creative ("750x200_wide-double-billboard"), and that is exactly the
+  // wording an email uses — far more to match on than a size alone.
+  const fromPath = (url) => {
+    try {
+      return decodeURIComponent(new URL(url).pathname)
+        .split("/").filter(Boolean).slice(-2).join(" ").replace(/[_\-]+/g, " ");
+    } catch (e) { return ""; }
+  };
+  const emailItems = state.testTargets.map(t => ({
+    id: t.tid,
+    label: [targetLabel(t), fromPath(t.url)]
+      .filter(Boolean).join(" ").trim() || t.url,
+    url: t.url,
+  }));
+  const sheetRows = state.groups
+    .filter(g => g.primary && g.rowName)
+    .map(g => ({ name: g.rowName, expected_id: g.primary, gid: g.gid }));
+  return { emailItems, sheetRows };
+}
 
-  fetchWithTimeout(BACKEND_URL + "/discover", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targets })
-  }, 5000)
-    .then(r => r.json())
-    .then(data => pollScan(data.run_id))
-    .catch(() => {
-      state.scanning = false;
-      state.backend = "down";
-      render();
+function runAiMatch() {
+  const { emailItems, sheetRows } = pairInputs();
+  if (!emailItems.length || !sheetRows.length || state.pairing) return;
+
+  state.pairing = true;
+  state.pairError = "";
+  renderPair();
+
+  // Longer than the other calls on purpose: this one may consult a model,
+  // once per unsettled row. The 8s default aborted a request the backend
+  // went on to answer fine at 11s — and an abort is indistinguishable from
+  // an unreachable server, so the UI reported the backend as down.
+  apiPost("/match", { email_items: emailItems, sheet_rows: sheetRows }, 120000)
+    .then(data => {
+      state.pair = {};
+      (data.results || []).forEach((r, i) => {
+        const tid = emailItems[i] && emailItems[i].id;
+        if (tid) state.pair[tid] = Object.assign({}, r, { accepted: !r.needs_review });
+      });
+      state.modelUsed = !!data.model_used;
+      state.pairing = false;
+      renderPair();
+    })
+    .catch(err => {
+      state.pairing = false;
+      state.pairError = noteApiError(err);
+      renderPair();
     });
 }
 
-function pollScan(runId) {
-  fetchWithTimeout(BACKEND_URL + "/discover/" + runId, {}, 5000)
-    .then(r => r.json())
+function renderPair() {
+  if (state.phase !== "results") return;
+  const section = document.getElementById("pairSection");
+  const { emailItems, sheetRows } = pairInputs();
+  // Only meaningful once the session holds both halves of the comparison.
+  section.hidden = !(emailItems.length && sheetRows.length);
+  if (section.hidden) return;
+
+  const btn = document.getElementById("runPair");
+  btn.disabled = state.backend !== "up" || state.pairing;
+  btn.textContent = state.pairing ? "Pairing…"
+    : (Object.keys(state.pair).length ? "Pair again" : "Pair with sheet");
+
+  const hint = document.getElementById("pairHint");
+  const pending = Object.values(state.pair).filter(p => !p.accepted).length;
+  hint.textContent = state.pairError ? state.pairError
+    : state.backend !== "up" ? "start it: cd backend && python app.py"
+    : pending ? pending + " need your review"
+    : Object.keys(state.pair).length && state.modelUsed === false
+      ? "settled without the model" : "";
+  hint.classList.toggle("err", !!state.pairError);
+
+  document.getElementById("pairList").innerHTML = state.testTargets.map(t => {
+    const p = state.pair[t.tid];
+    const label = targetLabel(t);
+    if (!p) {
+      return `<div class="verify-row">
+          <span class="plat">${escapeHtml(label)}</span>
+          <span class="u">—</span>
+          <span class="status-pill pending">not paired</span>
+        </div>`;
+    }
+    const pill = p.accepted ? "pass" : p.expected_id ? "warn" : "fail";
+    const text = p.accepted ? "accepted" : p.expected_id ? "confirm?" : "no match";
+    const src = p.source === "model" ? "model" : p.source === "explicit" ? "id in email" : "name score";
+    const btns = p.expected_id && !p.accepted
+      ? `<button type="button" class="btn-mini" data-accept="${escapeHtml(t.tid)}">accept</button>
+         <button type="button" class="btn-mini" data-reject="${escapeHtml(t.tid)}">reject</button>`
+      : "";
+    return `
+      <div class="verify-row">
+        <span class="plat">${escapeHtml(label)}</span>
+        <span class="u" title="${escapeHtml(p.matched_row || "")}">${escapeHtml(p.matched_row || "no row matched")}</span>
+        <span class="status-pill ${pill}">${escapeHtml(text)}</span>
+      </div>
+      <div class="verify-row" style="grid-template-columns: 1fr auto;">
+        <div class="verify-observed">expects <strong>${escapeHtml(p.expected_id || "—")}</strong>
+          · ${escapeHtml(src)} ${p.confidence ? "· confidence " + p.confidence : ""}
+          ${p.warnings.map(w => `<div class="match-detail bad">${escapeHtml(w)}</div>`).join("")}
+        </div>
+        <div>${btns}</div>
+      </div>`;
+  }).join("");
+}
+
+// ── Step 1: scan ────────────────────────────────────────────────────────
+
+function runScan() {
+  const advertiser = (document.getElementById("advertiser").value || "").trim();
+  const targets = state.testTargets.map(t => ({ id: t.tid, url: t.url, advertiser }));
+  if (!targets.length || state.scanning) return;
+
+  const token = ++runToken;
+  state.scanning = true;
+  state.scanError = "";
+  targets.forEach(t => { state.scan[t.id] = { status: "pending" }; });
+  renderScan();
+
+  const redraw = () => { renderScan(); renderVendors(); renderMatch(); };
+
+  apiPost("/discover", { targets })
     .then(data => {
-      Object.assign(state.scan, data.results);
-      // A vendor is only offered as a choice once it has actually been seen
-      // on at least one page — the picker reflects this campaign, not a
-      // hardcoded vendor list.
-      if (!state.vendorTouched) {
-        discoveredVendors().forEach(v => {
-          if (MAIN_VENDORS.includes(v)) state.selectedVendors.add(v);
-        });
-      }
-      renderScan(); renderVendors(); renderMatch();
-      if (data.done) {
-        state.scanning = false;
-        renderScan(); renderVendors(); renderMatch();
-      } else {
-        setTimeout(() => pollScan(runId), 1000);
-      }
+      applyRejected(state.scan, data.rejected);
+      state.scanRunId = data.run_id;
+      state.watchIds = data.watch_ids || [];
+      redraw();
+      pollRun("/discover", data.run_id, token,
+        d => {
+          Object.assign(state.scan, d.results);
+          state.watchIds = d.watch_ids || state.watchIds;
+          // A vendor is only offered as a choice once it has actually been
+          // seen on at least one page — the picker reflects this campaign,
+          // not a hardcoded vendor list.
+          if (!state.vendorTouched) {
+            discoveredVendors().forEach(v => {
+              if (MAIN_VENDORS.includes(v)) state.selectedVendors.add(v);
+            });
+          }
+          redraw();
+        },
+        err => { state.scanning = false; state.scanError = err || "";
+                 state.watchIds = []; redraw(); },
+        1000);
     })
-    .catch(() => { state.scanning = false; render(); });
+    .catch(err => {
+      state.scanning = false;
+      state.scanError = noteApiError(err);
+      applyRejected(state.scan, err.rejected);
+      redraw();
+    });
 }
 
 function discoveredVendors() {
@@ -1026,24 +1495,103 @@ function renderScan() {
   btn.textContent = state.scanning
     ? "Scanning… " + done + "/" + state.testTargets.length
     : (done ? "Re-scan " : "Scan ") + state.testTargets.length + " test page" + (state.testTargets.length === 1 ? "" : "s");
-  document.getElementById("scanHint").textContent =
-    state.backend === "up" ? "" : "start it: cd backend && python app.py";
+  const scanHint = document.getElementById("scanHint");
+  const watching = state.scanning && state.watchIds.length;
+  if (watching) {
+    // The browser window is open on the operator's own screen and the run is
+    // blocked on them. Say so plainly and give them the way out — there is no
+    // Ctrl+C here, and a silent wait reads as a hang.
+    scanHint.innerHTML =
+      '<strong>A browser window is open — click the creative there.</strong><br>' +
+      'Automated clicking is not trusted on this page, so the tool only records. ' +
+      '<button type="button" class="btn-mini" id="endWatch">I&rsquo;m done clicking</button>';
+  } else {
+    scanHint.textContent = state.scanError ? state.scanError
+      : state.backend === "up" ? "" : "start it: cd backend && python app.py";
+  }
+  scanHint.classList.toggle("err", !!state.scanError && !watching);
 
   document.getElementById("scanList").innerHTML = state.testTargets.map(t => {
     const r = state.scan[t.tid] || { status: "idle" };
-    const pill = { idle: "pending", pending: "pending", running: "running",
-                   done: "pass", none: "fail", error: "error" }[r.status] || "pending";
+    // "tags found" was true but useless — it did not say whether the click
+    // tracked, which is the question the run exists to answer.
+    const serving = Object.keys(r.vendors || {}).filter(v => VENDOR_ROLE[v] !== "measurement");
+    // Whether the backend told us anything about kinds at all. An older
+    // build of /discover returns vendors without them, and claiming
+    // "impression only" on that basis asserts an impression nobody saw —
+    // the same confident-guess failure this tool exists to catch.
+    const knowsKinds = Object.values(r.kinds || {}).some(k => Object.keys(k || {}).length);
+    const withClick = serving.filter(v => ((r.kinds || {})[v] || {}).click);
+    const withImp = serving.filter(v => ((r.kinds || {})[v] || {}).impression);
+    let doneText = "tags found";
+    if (!knowsKinds && Object.keys(r.vendors || {}).length) {
+      doneText = "tags found — impression/click unknown (restart the backend)";
+    } else if (serving.length) {
+      // Not clicking and clicking-to-no-effect are different findings. Only
+      // the second one is the placement's problem; the first is ours, and
+      // saying "no click" there raises a defect against a tag that may be
+      // perfectly fine.
+      const tried = r.click_attempted;
+      // A click that tracked for a different id is not "no click" — it says
+      // the slot was carrying somebody else's creative, which is a finding in
+      // its own right and a different conversation with the publisher.
+      const clickNote = r.click_result === "other_advertiser"
+                        ? "clicked, but the click tracked another advertiser"
+                      : tried === false ? "click not tested — automation could not click"
+                      : tried === null ? "click not confirmed"
+                      : "impression only — no click";
+      doneText = withClick.length === serving.length && withImp.length === serving.length
+          ? "impression + click"
+        : withClick.length && withImp.length
+          ? "click missing on " + (serving.length - withClick.length) + " of " + serving.length
+        : withImp.length ? clickNote
+        : withClick.length ? "click only — no impression"
+        : "tags seen, neither impression nor click classified";
+    } else if (Object.keys(r.vendors || {}).length) {
+      doneText = "measurement only";
+    }
     const text = { idle: "not scanned", pending: "queued", running: "loading page…",
-                   done: "tags found", none: "no tags fired", error: "error" }[r.status] || r.status;
-    const found = r.vendors ? Object.keys(r.vendors).map(v =>
-      `<span class="chip-found ${MAIN_VENDORS.includes(v) ? "main" : ""}">${escapeHtml(v)}</span>`).join("") : "";
+                   done: doneText, none: "no tags fired", error: "error" }[r.status] || r.status;
+    // Green only when the click tracked too. An impression on its own is a
+    // half-working placement, and painting it as a pass is how a missing
+    // click tag reaches the end of a campaign unnoticed.
+    // Measurement alone is not a pass either: DoubleVerify riding along with
+    // no serving tag means the campaign's own tag never fired on this page.
+    const anyVendor = Object.keys(r.vendors || {}).length;
+    const clickShort = serving.length
+      ? withClick.length < serving.length
+      : anyVendor > 0;
+    const pill = { idle: "pending", pending: "pending", running: "running",
+                   done: clickShort ? "warn" : "pass",
+                   none: "fail", error: "error" }[r.status] || "pending";
+    // Show which half fired. A serving vendor with an impression and no click
+    // is the single most common real defect on these campaigns, and it used to
+    // look identical here to one that works.
+    const kinds = r.kinds || {};
+    const found = r.vendors ? Object.keys(r.vendors).map(v => {
+      const k = kinds[v] || {};
+      const known = Object.keys(k).length > 0;
+      const marks = VENDOR_ROLE[v] === "measurement"
+        ? '<span class="kind on">seen</span>'
+        : !known
+          // Struck-through would read as "did not fire". We do not know.
+          ? '<span class="kind unknown">kind unknown</span>'
+          : `<span class="kind ${k.impression ? "on" : "off"}">imp</span>`
+            + `<span class="kind ${k.click ? "on" : r.click_attempted === false ? "unknown" : "off"}"`
+            + ` title="${r.click_attempted === false ? "the run never managed to click — not evidence the tag is missing" : ""}">clk</span>`;
+      return `<span class="chip-found ${MAIN_VENDORS.includes(v) ? "main" : ""}">`
+             + escapeHtml(v) + marks + `</span>`;
+    }).join("") : "";
+    const inMarkup = Object.keys(r.vendors_in_markup || {}).map(v =>
+      `<span class="chip-found markup" title="in the page source but never requested — often another advertiser's tag">${escapeHtml(v)} · markup only</span>`).join("");
     const detail = r.status === "error" && r.detail
       ? `<div class="match-detail">${escapeHtml(r.detail)}</div>` : "";
+    const isWatch = state.watchIds.includes(t.tid);
     return `
       <div class="scan-row">
-        <span class="plat">${escapeHtml(t.size)}_${escapeHtml(t.variant)}</span>
-        <span class="found">${found || `<span class="u" title="${escapeHtml(t.url)}">${escapeHtml(t.url.slice(0, 90))}</span>`}</span>
-        <span class="status-pill ${pill}">${escapeHtml(text)}</span>
+        <span class="plat">${escapeHtml(targetLabel(t))}</span>
+        <span class="found">${(found + inMarkup) || `<span class="u" title="${escapeHtml(t.url)}">${escapeHtml(t.url.slice(0, 90))}</span>`}</span>
+        <span class="status-pill ${isWatch && state.scanning ? "warn" : pill}">${escapeHtml(isWatch && state.scanning ? "waiting for you" : text)}</span>
         ${detail}
       </div>`;
   }).join("");
@@ -1073,6 +1621,26 @@ function renderVendors() {
 // ── Step 3: match discovered IDs against the sheet ──────────────────────
 
 // vendor → field → value → [sheet groups carrying it]
+// The ID this test URL was paired with, once a person accepted the pairing.
+// Only an accepted pairing counts: a suggestion the reviewer has not looked
+// at is not a basis for calling a publisher's tag wrong.
+// The publisher a sheet row belongs to. Trafficking rows are named
+// `Publisher_direct_300x250-Rectangle_…`, so the prefix before the buy type
+// is the publisher — the same grouping the campaign is actually managed in,
+// and the unit a person raises a problem with.
+function publisherOf(rowName) {
+  if (!rowName) return null;
+  const m = String(rowName).match(/^\s*([A-Za-z0-9.\- ]{2,30}?)[_\s]+(direct|native|programmatic|rtb)/i);
+  if (m) return m[1].trim();
+  const first = String(rowName).trim().split(/[_\s]/)[0];
+  return first && /[a-z]/i.test(first) ? first : null;
+}
+
+function pairedIdFor(tid) {
+  const p = state.pair[tid];
+  return p && p.accepted && p.expected_id ? p.expected_id : null;
+}
+
 function sheetIndex() {
   const idx = {};
   state.groups.forEach(g => {
@@ -1099,19 +1667,53 @@ function renderMatch() {
     ? "Each ID found on a page, looked up in the uploaded sheet. A hit whose sheet row names a different creative than the page is flagged — that's the wrong tag in the right slot."
     : "No trafficking sheet uploaded yet — showing what fired on each page. Upload the sheet to check these against what was booked.";
 
-  document.getElementById("matchList").innerHTML = state.testTargets.map(t => {
+  const body = state.testTargets.map(t => {
     const r = state.scan[t.tid];
     if (!r || !r.vendors) return "";
-    const rows = vendors.map(vendor => {
-      const found = r.vendors[vendor];
-      const label = `${t.size}_${t.variant} · ${vendor}`;
-      if (!found) {
-        return `<div class="scan-row">
-          <span class="plat">${escapeHtml(t.size)}_${escapeHtml(t.variant)}</span>
-          <span class="found"><span class="chip-found">${escapeHtml(vendor)}</span> not firing on this page</span>
-          <span class="status-pill fail">missing</span>
-        </div>`;
+    // One publisher per test target, worked out from whichever vendor did
+    // match a sheet row. Vendors with no sheet row of their own — ABT Shield —
+    // otherwise fall into "Unassigned" and get separated from the very rows
+    // they were observed alongside.
+    const targetPublisher = (() => {
+      for (const v of Object.keys(r.vendors || {})) {
+        for (const f of Object.keys(r.vendors[v] || {})) {
+          for (const val of r.vendors[v][f] || []) {
+            const hit = (((idx[v] || {})[f] || {})[val] || [])
+              .map(g => publisherOf(g.rowName)).find(Boolean);
+            if (hit) return hit;
+          }
+        }
       }
+      return "Unassigned";
+    })();
+
+    return vendors.map(vendor => {
+      const found = r.vendors[vendor];
+      const label = `${targetLabel(t)} · ${vendor}`;
+      if (!found) {
+        return { publisher: "Unassigned", html: `<tr class="row-bad">
+          <td><div class="m-desc">${escapeHtml(t.desc || targetLabel(t))}</div>
+            <a class="m-url" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.url.slice(0, 78))}</a></td>
+          <td class="m-ids">—</td><td class="m-sheet">—</td>
+          <td class="m-kind">—</td><td class="m-kind">—</td>
+          <td><span class="status-pill fail">${escapeHtml(vendor)} not firing</span></td>
+        </tr>` };
+      }
+      if (FIXED_ID_VENDORS.includes(vendor)) {
+        const k0 = (r.kinds || {})[vendor] || {};
+        const seen = Object.keys(k0).length
+          ? Object.keys(k0).join(" + ")
+          : Object.values(found).flat().join(", ");
+        return { publisher: targetPublisher, html: `<tr>
+          <td><div class="m-desc">${escapeHtml(t.desc || targetLabel(t))}</div>
+            <a class="m-url" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.url.slice(0, 78))}</a></td>
+          <td class="m-ids">${escapeHtml(Object.values(found).flat().join(", "))}</td>
+          <td class="m-sheet">n/a &mdash; fixed order id, not booked per placement</td>
+          <td class="m-kind" colspan="2">${escapeHtml(seen)}</td>
+          <td><span class="status-pill pass">${escapeHtml(vendor)} present</span></td>
+        </tr>` };
+      }
+
       const fields = MATCH_FIELDS[vendor] || Object.keys(found);
       const checks = fields.filter(f => found[f]).map(f => {
         const values = found[f];
@@ -1119,26 +1721,88 @@ function renderMatch() {
           const hits = (((idx[vendor] || {})[f] || {})[val]) || [];
           if (!haveSheet) return { f, val, cls: "", note: "found on page" };
           if (!hits.length) return { f, val, cls: "bad", note: "not in sheet" };
-          const named = hits.find(g => g.nameHint);
-          if (named && named.nameHint && (named.nameHint.size !== t.size || named.nameHint.variant !== t.variant)) {
-            return { f, val, cls: "bad", note: "in sheet, but booked as " + named.nameHint.size + "_" + named.nameHint.variant };
+          // The ID is the identity. Two things are then checked against it,
+          // and neither guesses: both sides state their format in writing.
+          const expected = pairedIdFor(t.tid);
+          if (expected && val !== expected) {
+            return { f, val, cls: "bad",
+                     note: "WRONG TAG — this placement expects " + expected };
           }
-          return { f, val, cls: "ok", note: "in sheet" };
+
+          // The format the email gave this creative, against the format the
+          // sheet books that same ID under. This is the stale-export failure
+          // in its exact shape: bn 90069246 described as 120x600 in one
+          // export and 300x250 in the next. The ID matches, everything looks
+          // fine, and the wrong creative is signed off.
+          //
+          // Only compared when both sides actually name a format — an absent
+          // one is missing data, not a disagreement.
+          const booked = hits.map(g => g.nameHint && g.nameHint.size).filter(Boolean);
+          if (t.size && booked.length && !booked.includes(t.size)) {
+            return { f, val, cls: "bad",
+                     note: "SIZE MISMATCH — email says " + t.size
+                           + ", sheet books this ID as " + booked.join(" / ") };
+          }
+
+          const note = expected ? "matches the paired row" : "in sheet";
+          return { f, val, cls: "ok",
+                   note: t.size && booked.includes(t.size) ? note + " · " + t.size : note };
         });
       }).flat();
       const bad = checks.some(c => c.cls === "bad");
       const pill = !haveSheet ? "running" : bad ? "fail" : "pass";
       const pillText = !haveSheet ? "found" : bad ? "mismatch" : "matches sheet";
-      return `<div class="scan-row">
-          <span class="plat">${escapeHtml(t.size)}_${escapeHtml(t.variant)}</span>
-          <span class="found"><span class="chip-found ${MAIN_VENDORS.includes(vendor) ? "main" : ""}">${escapeHtml(vendor)}</span></span>
-          <span class="status-pill ${pill}">${escapeHtml(pillText)}</span>
-          <div class="match-detail">${checks.map(c =>
-            `${escapeHtml(c.f)}=${escapeHtml(c.val)} <span class="${c.cls}">${escapeHtml(c.note)}</span>`).join(" &nbsp;·&nbsp; ")}</div>
-        </div>`;
-    }).join("");
-    return rows;
-  }).join("");
+
+      // What the sheet calls the IDs found here, so the verdict can be read
+      // against the mail rather than taken on trust.
+      const sheetRows = [...new Set(checks.flatMap(c =>
+        (((idx[vendor] || {})[c.f] || {})[c.val] || []).map(g => g.rowName).filter(Boolean)))];
+      const k = (r.kinds || {})[vendor] || {};
+      const knowsKinds = Object.keys(k).length > 0;
+      const measurement = VENDOR_ROLE[vendor] === "measurement";
+      const mark = (on, unknown) => unknown ? '<span class="kind unknown">?</span>'
+        : `<span class="kind ${on ? "on" : "off"}">${on ? "✓" : "✗"}</span>`;
+
+      const publisher = sheetRows.map(publisherOf).find(Boolean) || targetPublisher;
+      return { publisher, html: `<tr class="${bad ? "row-bad" : ""}">
+          <td>
+            <div class="m-desc">${escapeHtml(t.desc || targetLabel(t))}</div>
+            <a class="m-url" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer"
+               title="${escapeHtml(t.url)}">${escapeHtml(t.url.slice(0, 78))}${t.url.length > 78 ? "…" : ""}</a>
+          </td>
+          <td class="m-ids">${checks.map(c => escapeHtml(c.f + "=" + c.val)).join("<br>") || "—"}</td>
+          <td class="m-sheet">${sheetRows.length ? sheetRows.map(escapeHtml).join("<br>") : "—"}</td>
+          <td class="m-kind">${measurement ? '<span class="kind on">seen</span>'
+                                : mark(k.impression, !knowsKinds)}</td>
+          <td class="m-kind">${measurement ? "—"
+                                : mark(k.click, !knowsKinds || r.click_attempted === false)}</td>
+          <td><span class="status-pill ${pill}">${escapeHtml(pillText)}</span>
+            ${checks.filter(c => c.cls === "bad").map(c =>
+              `<div class="match-detail bad">${escapeHtml(c.note)}</div>`).join("")}
+          </td>
+        </tr>` };
+    });
+  }).flat().filter(Boolean);
+
+  // Grouped by publisher: that is how the campaign is bought, and how a
+  // problem gets raised — one conversation per publisher, not per creative.
+  const byPublisher = {};
+  body.forEach(r => { (byPublisher[r.publisher] = byPublisher[r.publisher] || []).push(r.html); });
+  const groups = Object.keys(byPublisher).sort((a, b) =>
+    a === "Unassigned" ? 1 : b === "Unassigned" ? -1 : a.localeCompare(b));
+
+  document.getElementById("matchList").innerHTML = body.length
+    ? `<table class="match-table">
+         <thead><tr>
+           <th>Test &amp; link</th><th>ID found</th><th>Sheet row</th>
+           <th>IMP</th><th>CLK</th><th>Verdict</th>
+         </tr></thead>
+         <tbody>${groups.map(g =>
+           `<tr class="pub-row"><td colspan="6">${escapeHtml(g)}
+              <span class="pub-count">${byPublisher[g].length}</span></td></tr>`
+           + byPublisher[g].join("")).join("")}</tbody>
+       </table>`
+    : "";
 }
 
 function setMode(mode) {
@@ -1178,7 +1842,12 @@ function renderResults() {
 
   const counts = { All: s.rows.length };
   s.rows.forEach(r => { counts[r.platform] = (counts[r.platform] || 0) + 1; });
-  const names = ["All", "Adform", "CM360", "Ad Manager"].filter(n => n === "All" || counts[n]);
+  // Derived from what was actually extracted, not a fixed list. The fixed one
+  // named three of the five platforms `platformOf` recognises, so ABT Shield
+  // and DoubleVerify rows appeared in the table and in the "All" count with
+  // no chip of their own — the chips never added up to All.
+  const names = ["All"].concat(
+    Object.keys(counts).filter(n => n !== "All").sort());
 
   const filtersEl = document.getElementById("filters");
   filtersEl.innerHTML = names.map(n => `
@@ -1222,11 +1891,41 @@ function render() {
   renderPhase();
   renderResults();
   renderVerify();
+  renderPair();
   renderScan();
   renderVendors();
   renderMatch();
 }
 
+// The advertiser rarely changes within a campaign, and retyping it before
+// every scan is friction that ends with the field left empty — which
+// silently disables the vision fallback.
+(function rememberAdvertiser() {
+  const el = document.getElementById("advertiser");
+  try {
+    const saved = localStorage.getItem("atv.advertiser");
+    if (saved) el.value = saved;
+  } catch (e) { /* private window, or site data blocked */ }
+  el.addEventListener("change", () => {
+    try { localStorage.setItem("atv.advertiser", el.value.trim()); } catch (e) {}
+  });
+})();
+
+document.getElementById("runPair").addEventListener("click", runAiMatch);
+// The button lives inside a re-rendered hint, so it is delegated.
+document.getElementById("scanHint").addEventListener("click", (e) => {
+  if (e.target.closest("#endWatch")) endWatch();
+});
+document.getElementById("pairList").addEventListener("click", (e) => {
+  const acc = e.target.closest("[data-accept]"), rej = e.target.closest("[data-reject]");
+  if (acc) { const p = state.pair[acc.dataset.accept]; if (p) p.accepted = true; renderPair(); }
+  // Rejecting clears the expectation rather than substituting a guess: an
+  // unpaired URL is an honest gap, a wrong one is a false verdict.
+  if (rej) { const p = state.pair[rej.dataset.reject];
+    if (p) { p.expected_id = null; p.matched_row = null; p.accepted = false;
+             p.warnings = ["rejected — pair it by hand before running"]; }
+    renderPair(); }
+});
 document.getElementById("tabPaste").addEventListener("click", () => setMode("paste"));
 document.getElementById("tabFile").addEventListener("click", () => setMode("file"));
 document.getElementById("loadSample").addEventListener("click", loadSample);
@@ -1294,6 +1993,33 @@ document.getElementById("resultsBody").addEventListener("click", (e) => {
     btn.closest("tr").classList.remove("copied");
   }, 1500);
 });
+
+// ── startup ─────────────────────────────────────────────────────────────
+
+// A file dropped anywhere but the dropzone would otherwise be opened by the
+// browser, navigating away and taking the whole session with it.
+["dragover", "drop"].forEach(evt => {
+  window.addEventListener(evt, e => {
+    if (!e.target.closest || !e.target.closest("#dropzone")) e.preventDefault();
+  });
+});
+
+// The status was only ever refreshed as a side effect of extracting, so
+// starting the backend afterwards left the header stuck on "not running"
+// with no way to correct it.
+document.getElementById("backendLabel").addEventListener("click", checkBackend);
+document.getElementById("backendDot").addEventListener("click", checkBackend);
+
+// SheetJS comes from a CDN, and the README says to open this page over
+// file:// — behind a proxy or offline it simply is not there. Say so up
+// front rather than letting the user pick a file and watch nothing happen.
+if (!window.XLSX) {
+  const desc = document.querySelector("#dropzone .desc");
+  if (desc) desc.textContent =
+    "Spreadsheet reading is unavailable — cdn.sheetjs.com did not load. Paste the tags instead.";
+}
+
+checkBackend();
 </script>
 </body>
 </html>
