@@ -18,19 +18,32 @@ GAM_INFRA = "securepubads.g.doubleclick.net"
 IMPRESSION = "impression"
 CLICK = "click"
 MEASUREMENT = "measurement"
+# The player asking the ad server for a video creative. Deliberately not an
+# impression: the VAST document is fetched before anything is shown, and a
+# player that fetches it and then fails to start the spot has produced no
+# impression at all. Keeping them apart is what separates "the tag is not
+# implemented" from "the tag is fine, the video never played" — which on
+# TVP VOD is the difference between a defect and a test environment problem.
+VAST = "vast"
 
 
 class Vendor:
     """A vendor's beacon shapes.
 
-    `kinds` maps a kind to (url_substring, id_regex). A URL is that kind only
-    if the substring is present; the regex then pulls the campaign ID out.
+    `kinds` maps a kind to (url_substring, id_regex), or to a list of those
+    when one kind arrives in more than one shape — Adform counts a display
+    impression at `adfserve/` and an instream one at `videoad/impr/`, and
+    both are impressions.
     """
 
     def __init__(self, name, kinds, id_label):
         self.name = name
         self.id_label = id_label
-        self.kinds = {k: (sub, re.compile(rx)) for k, (sub, rx) in kinds.items()}
+        self.kinds = {}
+        for kind, shapes in kinds.items():
+            if isinstance(shapes, tuple):
+                shapes = [shapes]
+            self.kinds[kind] = [(sub, re.compile(rx)) for sub, rx in shapes]
 
     def classify(self, url):
         """-> (kind, id) or (None, None). Order matters: the most specific
@@ -38,10 +51,11 @@ class Vendor:
         impression."""
         if GAM_INFRA in url:
             return None, None
-        for kind, (sub, rx) in self.kinds.items():
-            if sub in url:
-                m = rx.search(url)
-                return kind, (m.group(1) if m else None)
+        for kind, shapes in self.kinds.items():
+            for sub, rx in shapes:
+                if sub in url:
+                    m = rx.search(url)
+                    return kind, (m.group(1) if m else None)
         return None, None
 
 
@@ -50,10 +64,30 @@ ADFORM = Vendor(
     id_label="bn",
     kinds={
         # /C/ is the click redirector, adfserve/ the 1x1 impression counter.
-        CLICK: ("track.adform.net/C/", r"[?&;]bn=(\d+)"),
-        IMPRESSION: ("track.adform.net/adfserve/", r"[?&;]bn=(\d+)"),
+        # Display clicks go through /C/, instream ones through /videoad/c/ —
+        # measured as the landing URL of a real click on a TVN pre-roll.
+        CLICK: [("track.adform.net/C/", r"[?&;]bn=(\d+)"),
+                ("track.adform.net/videoad/c/", r"[?&;]bn=(\d+)")],
+        # Instream, measured on a TVN pre-roll, arrives in three shapes and
+        # only one of them is the impression:
+        #
+        #   /serving/videoad/  the player asking for the VAST document
+        #   /videoad/impr/     the impression, once the spot actually starts
+        #   /videoad/event/    quartile and viewability events after that
+        #
+        # None of them look like the display rule, so before this every
+        # instream placement came back "no tag fired" however correctly it
+        # ran. Reading the VAST request as the impression would be the
+        # opposite error: that document is fetched before anything plays, and
+        # a player that fetches it and never starts the spot owes nobody an
+        # impression.
+        IMPRESSION: [("track.adform.net/adfserve/", r"[?&;]bn=(\d+)"),
+                     ("track.adform.net/videoad/impr/", r"[?&;]bn=(\d+)")],
+        VAST: ("track.adform.net/serving/videoad/", r"[?&;]bn=(\d+)"),
+        MEASUREMENT: ("track.adform.net/videoad/event/", r"[?&;]bn=(\d+)"),
     },
 )
+
 
 CM360 = Vendor(
     "CM360",

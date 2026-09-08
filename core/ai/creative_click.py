@@ -30,6 +30,8 @@ no use here — it blacklists `iframe`, which is where creatives live.
 import base64
 import json
 
+from core.analyze import vendors
+
 PROMPT = """You are looking at a screenshot of a publisher's web page that is \
 running an advertising campaign.
 
@@ -116,8 +118,14 @@ def click_confirmed(recorder, expected_id, since_index):
     so an earlier click on the same page cannot be counted twice.
     """
     fresh = recorder.beacons[since_index:]
+    # Only the serving vendors get a say in *whose* click this was. ABT
+    # Shield's click pixel carries a fixed order id — 237250412 on every campaign of theirs
+    # campaign — and reading that as an advertiser id turned a click that
+    # landed correctly on `?bn=90116857` into "the slot is carrying another
+    # advertiser". Measurement rides along; it does not identify anyone.
     clicks = [b for b in fresh
-              if b.get("kind") == "click" and b.get("evidence") == "fired"]
+              if b.get("kind") == "click" and b.get("evidence") == "fired"
+              and b.get("vendor") in vendors.SERVING_VENDORS]
     if not clicks:
         return "none", None
     if expected_id:

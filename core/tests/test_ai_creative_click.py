@@ -67,8 +67,8 @@ class Rec:
         self.beacons = beacons
 
 
-def _click(ident):
-    return {"kind": "click", "evidence": "fired", "id": ident}
+def _click(ident, vendor="Adform"):
+    return {"kind": "click", "evidence": "fired", "id": ident, "vendor": vendor}
 
 
 def test_a_click_counts_only_when_the_beacon_agrees():
@@ -104,3 +104,20 @@ def test_impressions_are_not_mistaken_for_clicks():
 def test_markup_only_beacons_do_not_count():
     rec = Rec([{"kind": "click", "evidence": "in_markup", "id": "90069314"}])
     assert cc.click_confirmed(rec, "90069314", 0) == ("none", None)
+
+
+def test_measurement_click_pixels_do_not_identify_an_advertiser():
+    """ABT Shield's click pixel carries a fixed order id — 237250412 on every
+    campaign of theirs — so reading it as an advertiser id turns a click that landed
+    correctly into "the slot is carrying another advertiser". Measured on a
+    TVN pre-roll, where the run clicked the spot, landed on
+    `track.adform.net/videoad/c/?bn=90116857`, and reported it as somebody
+    else's."""
+    rec = Rec([_click("237250412", vendor="ABT Shield"),
+               _click("90116857")])
+    assert cc.click_confirmed(rec, "90116857", 0) == ("confirmed", "90116857")
+
+
+def test_measurement_alone_is_not_a_click():
+    rec = Rec([_click("237250412", vendor="ABT Shield")])
+    assert cc.click_confirmed(rec, "90116857", 0) == ("none", None)

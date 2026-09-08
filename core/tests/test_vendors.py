@@ -151,3 +151,41 @@ def test_somebody_elses_tag_in_the_slot_is_named_as_that():
                    expected_id="89750125", rederive=False)
     assert r["verdict"] == _f.WRONG_TAG
     assert "455254508" in r["other_serving_ids"]
+
+
+# ── instream ─────────────────────────────────────────────────────────────
+# Every URL below was recorded on a live TVN pre-roll (bn 90116857) on
+# 2026-09-08. Before these rules the run reported "no tag fired" while the
+# spot was playing on screen.
+
+def test_video_vast_request_is_not_an_impression():
+    """The VAST fetch says the player asked for the creative, nothing more."""
+    assert vendors.classify(
+        "https://track.adform.net/serving/videoad/?bn=90116857&v=42&gdpr=1"
+    ) == [("Adform", vendors.VAST, "90116857")]
+
+
+def test_video_impression_is_an_impression():
+    assert vendors.classify(
+        "https://track.adform.net/videoad/impr/?bn=90116857;rotseqno=1;smid=0;1x1inv=1"
+    ) == [("Adform", vendors.IMPRESSION, "90116857")]
+
+
+def test_video_quartile_events_are_measurement():
+    """Quartiles ride behind the impression and must not stand in for one."""
+    assert vendors.classify(
+        "https://track.adform.net/videoad/event/?bn=90116857&event=27&time=0"
+    ) == [("Adform", vendors.MEASUREMENT, "90116857")]
+
+
+def test_display_impression_still_reads_as_one():
+    """The video shapes are additional, not a replacement."""
+    assert vendors.classify(
+        "https://track.adform.net/adfserve/?bn=89950737;1x1inv=1;srctype=3"
+    ) == [("Adform", vendors.IMPRESSION, "89950737")]
+
+
+def test_video_click_uses_the_same_redirector_as_display():
+    assert vendors.classify(
+        "https://track.adform.net/C/?bn=90116857&cpdir=https%3A%2F%2Fexample.com"
+    ) == [("Adform", vendors.CLICK, "90116857")]
