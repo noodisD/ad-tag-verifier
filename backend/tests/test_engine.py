@@ -65,3 +65,13 @@ def test_a_click_the_player_swallowed_is_not_an_attempt():
                        "clicked (video) but no click beacon followed"],
             "click_result": "not_testable"}
     assert engine._click_attempted(meta) is False
+
+
+def test_a_video_click_counts_as_an_attempt():
+    """The video strategy logs "video click at (x,y)" like every other click
+    path. Matching a hand-written list of sources reported a click confirmed
+    by its own beacon as never attempted."""
+    meta = {"events": ["video click at (692,389)",
+                       "click confirmed by beacon 90116854 (video)"],
+            "click_result": "confirmed"}
+    assert engine._click_attempted(meta) is True

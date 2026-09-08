@@ -82,8 +82,11 @@ def _click_attempted(meta):
     # it — reporting that as "clicked, nothing tracked" accuses the tag.
     if meta.get("click_result") == "not_testable":
         return False
-    if any(m in e for e in events
-           for m in ("click element at", "overlay click at", "model click at")):
+    # Every path that actually clicks logs "<source> click at (x,y)" — element,
+    # overlay, model, video. Listing the sources by hand meant a new strategy
+    # silently reported its clicks as never attempted: the video runs came back
+    # with a confirmed beacon next to "click not confirmed".
+    if any(" click at (" in e for e in events):
         return True
     if any("click skipped" in e or "link click failed" in e for e in events):
         return False
