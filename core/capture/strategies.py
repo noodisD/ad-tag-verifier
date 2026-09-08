@@ -129,6 +129,107 @@ def _clickthrough_element(page):
     return None, None
 
 
+# What an interstitial looks like from the page's own point of view: a big
+# element, lifted above the article, that was not there a moment ago.
+_OVERLAY_PROBE = """() => {
+  const vw = innerWidth, vh = innerHeight;
+  let best = null;
+  for (const el of document.querySelectorAll('div,iframe,img,a,section,aside')) {
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || +st.opacity === 0) continue;
+    const pos = st.position;
+    if (pos !== 'fixed' && pos !== 'absolute' && pos !== 'sticky') continue;
+    const z = parseInt(st.zIndex, 10);
+    if (!(z > 100)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < vw * 0.4 || r.height < vh * 0.3) continue;
+    if (r.bottom < 0 || r.top > vh) continue;
+    const area = r.width * r.height;
+    if (!best || area > best.area)
+      best = {area, x: r.left + r.width / 2, y: r.top + r.height / 2,
+              w: Math.round(r.width), h: Math.round(r.height),
+              tag: el.tagName, z};
+  }
+  return best;
+}"""
+
+
+def _await_overlay(page, timeout, poll=0.15):
+    """Poll the DOM for an interstitial and return it the moment it appears.
+
+    Waiting for the impression beacon and only then looking was the wrong
+    order: a Commercial Break is shown *during* the transition and is gone by
+    the time the beacon has been seen and reacted to — measured on
+    kobieta.wp.pl, where the element under the cursor turned out to be the
+    article's own hero image. Watching the page instead catches it while it is
+    up, which is the only moment it can be clicked.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            found = page.evaluate(_OVERLAY_PROBE)
+        except Exception:
+            found = None            # mid-navigation; try again
+        if found:
+            return found
+        time.sleep(poll)
+    return None
+
+
+def _click_overlay(page, ctx, recorder, settings, meta, expected_id):
+    """Click a full-screen overlay, straight away.
+
+    Commercial Break leaves nothing for the usual targeting to find: its
+    impression is a 1x1 pixel with no frame to walk up to, and the click URL
+    is assembled in JS at click time so there is no <a href> carrying the
+    tracker either. What it does have is presence — it covers the viewport,
+    so whatever sits topmost at the centre is the creative.
+
+    Done immediately rather than after a screenshot round-trip, because the
+    overlay dismisses itself within a few seconds and by the time a model had
+    looked at a picture of it, it was gone.
+
+    Guessing the target this way is only safe because the beacon decides:
+    a click that lands elsewhere produces no click for this campaign and is
+    recorded as untested, never as a pass.
+    """
+    vp = settings["viewport"]
+    cx, cy = vp["width"] / 2, vp["height"] / 2
+    try:
+        info = page.evaluate(
+            """([x, y]) => {
+                 const el = document.elementFromPoint(x, y);
+                 if (!el) return null;
+                 const r = el.getBoundingClientRect();
+                 return {tag: el.tagName, w: Math.round(r.width), h: Math.round(r.height)};
+               }""", [cx, cy])
+    except Exception:
+        info = None
+    if not info or info["w"] < 200 or info["h"] < 150:
+        _log(meta, f"overlay click skipped: nothing large at the centre ({info})")
+        return False
+
+    since = len(recorder.beacons)
+    _log(meta, f"overlay click at ({cx:.0f},{cy:.0f}) on <{info['tag'].lower()}> "
+               f"{info['w']}x{info['h']}")
+    try:
+        with ctx.expect_page(timeout=8000) as popup:
+            page.mouse.click(cx, cy)
+        newp = popup.value
+        time.sleep(2)
+        try:
+            meta["landing"] = newp.url
+            _log(meta, f"landing -> {newp.url[:150]}")
+            newp.close()
+        except Exception:
+            pass
+    except Exception:
+        time.sleep(2)
+
+    _confirm_click(recorder, meta, expected_id, since, source="overlay")
+    return meta.get("click_result") == "confirmed"
+
+
 def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
     """Click the creative and follow where it goes.
 
@@ -290,7 +391,15 @@ def _confirm_click(recorder, meta, expected_id, since, source):
     pointed at the wrong one — produces somebody else's beacon, and is
     recorded as exactly that rather than as this campaign's click working.
     """
+    # Give the beacon time to arrive. A click tracker fires from the tab the
+    # click opened, and checking once a couple of seconds later reported "no
+    # click beacon followed" for clicks the HAR shows landing correctly —
+    # a contradiction between the live log and the verdict.
+    deadline = time.time() + 8
     verdict, ident = creative_click.click_confirmed(recorder, expected_id, since)
+    while verdict != "confirmed" and time.time() < deadline:
+        time.sleep(0.4)
+        verdict, ident = creative_click.click_confirmed(recorder, expected_id, since)
     meta["click_result"] = verdict
     if verdict == "confirmed":
         _log(meta, f"click confirmed by beacon {ident} ({source})")
@@ -389,7 +498,12 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
 
     exclude = settings.get("exclude_links")
     exclude_rx = re.compile(exclude, re.I) if exclude else None
-    host = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
+    # Split on the query and fragment too, not just the path. A preview link
+    # without a trailing slash — `https://kobieta.wp.pl?wfName=…` — left the
+    # whole query string as the "host", so no link on the page contained it and
+    # the run found zero candidates, reported no overlay, and called a working
+    # placement untagged.
+    host = re.split(r"[/?#]", re.sub(r"^https?://(www\.)?", "", url))[0]
 
     try:
         # Only links a person could actually click. Collecting every a[href]
@@ -436,12 +550,33 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
         _log(meta, f"[{i}] navigating via link click -> {href[:90]}")
         try:
             loc = page.locator(f'a[href="{href}"]').first
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
-                _click_link(page, loc, meta)   # real click: CB checks isTrusted
+            _click_link(page, loc, meta)       # real click: CB checks isTrusted
         except Exception as e:
             _log(meta, f"    link click failed: {str(e)[:80]}")
             continue
 
+        # Watch for the interstitial from the instant the link is clicked,
+        # rather than after the navigation has settled — it is shown during
+        # the transition, and by the time the page is quiet it has gone.
+        panel = _await_overlay(page, settings.get("overlay_wait", 12))
+        if panel:
+            _log(meta, f"    overlay on screen: <{panel['tag'].lower()}> "
+                       f"{panel['w']}x{panel['h']} z={panel['z']}")
+            since = len(recorder.beacons)
+            try:
+                page.mouse.click(panel["x"], panel["y"])
+            except Exception as e:
+                _log(meta, f"    overlay click failed: {str(e)[:60]}")
+            time.sleep(2)
+            _confirm_click(recorder, meta, expected, since, source="overlay")
+            if meta.get("click_result") == "confirmed":
+                _log(meta, "    overlay fired")
+                return
+
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            pass
         consent.accept(page, 1.5)
         got = recorder.wait_for(
             lambda: recorder.has(kind=vendors.IMPRESSION, ident=expected),
@@ -452,7 +587,12 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
             # itself after a few seconds, so deferring this until the strategy
             # returns meant the screenshot showed an ordinary article page and
             # the run reported a click it never had anything to click.
-            _click_creative(page, ctx, recorder, settings, meta, expected)
+            #
+            # Aim at the overlay itself first: it covers the viewport and the
+            # usual targeting has nothing to grip on here. Fall back to the
+            # normal path only if that produced no click for this campaign.
+            if not _click_overlay(page, ctx, recorder, settings, meta, expected):
+                _click_creative(page, ctx, recorder, settings, meta, expected)
             return
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)

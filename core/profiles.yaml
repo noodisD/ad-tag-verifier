@@ -145,7 +145,12 @@ profiles:
     patience: 90
 
   - name: commercial-break
-    match: ["Baner_Commercial_Break", "commercialFull", "CommercialBreakMobile"]
+    # `_commercial_` catches WP's own wfName convention
+    # (…_BankClient_kobieta_commercial_01), which the three literal slot names below
+    # miss — those pages then ran as a plain load, no navigation happened, and
+    # the overlay that only appears on one was reported as a tag not firing.
+    match: ["Baner_Commercial_Break", "commercialFull", "CommercialBreakMobile",
+            "_commercial_"]
     # The overlay only appears on a real in-page navigation. page.goto() never
     # triggers it, and a synthetic element.click() is ignored because it
     # carries isTrusted=false — it has to be a real mouse click on a link.
