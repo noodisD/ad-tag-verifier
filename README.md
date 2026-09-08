@@ -116,7 +116,7 @@ core/                 the engine
   profiles.yaml       per-site behaviour — adding a publisher is an entry, not code
   profiles.py         resolves a URL to merged settings
   capture/            one session -> one artifact (run.har + meta.json + screenshot)
-    strategies.py     load / gam_preview / navigation_click / watch
+    strategies.py     load / gam_preview / navigation_click / video / watch
     consent.py        getting past the consent wall
   analyze/            artifact -> verdict. No browser.
     vendors.py        what each vendor's beacons look like, split impression/click
@@ -165,6 +165,34 @@ could not have:
 Every vendor is split by impression and click. Matching `doubleclick.net/ddm/track`
 as one bucket cannot answer the question the tool exists for — *does the click
 track too?*
+
+### video — instream pre-rolls
+
+A pre-roll serves nothing until the player starts and stops being clickable
+the moment the spot ends, so it gets its own strategy: let autoplay have its
+chance, press play only if nothing happened, then click the spot itself while
+it is on screen. Three things were measured rather than assumed:
+
+- **The tab has to be in front.** The same vod.tvp.pl page requested its
+  pre-roll at 30.7s with the window fronted and at 232.5s without — Chrome
+  treats an occluded tab as idle and the player waits. A 90s budget reported
+  "no tags" on a page whose only problem was that nobody was looking at it.
+- **Instream beacons look nothing like display ones.** Adform serves video
+  through `serving/videoad/` (the VAST request), counts it at
+  `videoad/impr/`, and tracks the click at `videoad/c/` — none of which
+  match the `adfserve/` and `/C/` rules, so every video placement used to
+  come back "no tag fired" however well it ran. The VAST request is kept
+  apart from the impression on purpose: it is fetched before anything plays.
+- **Two spots in rotation is normal.** The TVP line item runs a 15s and a
+  30s and the ad server picks. Waiting out the budget for the expected one
+  while its partner played and finished left the click landing on an empty
+  player, so the run now clicks whichever spot started and lets the beacon
+  say whose click it was.
+
+Some players cannot be clicked by a robot at all — vod.tvp.pl takes the click
+as play/pause and the SDK never sees it. That is reported as *not tested*,
+not as a missing click tag: a spot with no click tracker would still have
+opened the advertiser's page.
 
 ### watch — where automation is not trusted
 

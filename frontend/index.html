@@ -1550,6 +1550,10 @@ function renderScan() {
       // its own right and a different conversation with the publisher.
       const clickNote = r.click_result === "other_advertiser"
                         ? "clicked, but the click tracked another advertiser"
+                      // The player took the click as play/pause and the ad
+                      // never saw it. Nothing was learned about the tag.
+                      : r.click_result === "not_testable"
+                        ? "click not tested — this player swallows the click; use watch"
                       : tried === false ? "click not tested — automation could not click"
                       : tried === null ? "click not confirmed"
                       : "impression only — no click";
@@ -1559,6 +1563,8 @@ function renderScan() {
           ? "click missing on " + (serving.length - withClick.length) + " of " + serving.length
         : withImp.length ? clickNote
         : withClick.length ? "click only — no impression"
+        : serving.some(v => ((r.kinds || {})[v] || {}).vast)
+          ? "creative requested but the spot never played — no impression"
         : "tags seen, neither impression nor click classified";
     } else if (Object.keys(r.vendors || {}).length) {
       doneText = "measurement only";
@@ -1590,6 +1596,12 @@ function renderScan() {
           // Struck-through would read as "did not fire". We do not know.
           ? '<span class="kind unknown">kind unknown</span>'
           : `<span class="kind ${k.impression ? "on" : "off"}">imp</span>`
+            // Instream only, and only when it changes the reading: the VAST
+            // document was fetched but the spot never started, so there is no
+            // impression to report and the tag is nonetheless implemented.
+            + (k.vast && !k.impression
+                 ? '<span class="kind unknown" title="the player requested this creative but never started the spot">vast</span>'
+                 : "")
             // A click beacon that was observed is evidence; "we did not manage
             // to click" is an inference about our own run. Evidence wins —
             // masking a fired click with "?" because a later fallback logged
