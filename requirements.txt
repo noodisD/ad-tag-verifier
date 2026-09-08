@@ -1,4 +1,14 @@
 playwright>=1.40
+flask>=3.0          # backend/app.py — the UI is unusable without it
 pandas>=2.0
 requests>=2.31
 lxml>=5.0
+pyyaml>=6.0
+
+# core/ tests — the analyzer runs without a browser, so its suite is fast
+pytest>=8.0
+
+# Optional: only needed to reach Gemini on Vertex AI with a service account.
+# Without it the matcher falls back to an API key, or to leaving uncertain
+# rows for a person — nothing else breaks.
+google-auth>=2.0

@@ -7,3 +7,33 @@ __pycache__/
 .venv/
 venv/
 *.log
+
+# Run artifacts. A HAR records full request AND response headers — session
+# cookies included — alongside real campaign IDs and publisher URLs. This repo
+# is a public portfolio with client names deliberately scrubbed; committing a
+# single artifact would undo that and leak credentials with it.
+core/artifacts/
+# Belt and braces: anchored patterns miss a nested copy, and a run
+# started from another working directory would land in one.
+**/artifacts/
+screenshots/
+*.har
+*.xlsx
+*.xls
+report_*.html
+
+# Test fixtures are the one exception: sanitized HARs, committed on purpose so
+# the analyzer has regression coverage. Sanitize with tools/sanitize_har.py —
+# never hand-copy a raw run artifact in here.
+!core/tests/fixtures/*.har
+
+# Persistent browser profile used by watch mode — contains real cookies.
+core/profile_data/
+
+# Campaign inputs (trafficking sheets, pasted emails)
+data/
+
+# Model credentials. GEMINI_API_KEY lives here and on the server only —
+# never in frontend/index.html, which is a static file in a public repo.
+.env
+.env.*
