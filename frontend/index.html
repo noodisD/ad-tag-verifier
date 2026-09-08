@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tag ID Extractor — ad-tag-verifier</title>
+<title>Ad Tag Verifier</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=Archivo+Mono:wght@400;500;600&display=swap">
@@ -334,8 +334,8 @@
 
 <header class="top">
   <div class="brand">
-    <div class="name">Tag ID Extractor</div>
-    <div class="label-sm">v1 &nbsp;/&nbsp; extraction is always client-side</div>
+    <div class="name">Ad Tag Verifier</div>
+    <div class="label-sm">v1 &nbsp;/&nbsp; impression and click, on the publisher's own page</div>
   </div>
   <div class="actions-row">
     <span class="backend-dot" id="backendDot"></span>
@@ -496,13 +496,17 @@
           <div class="headline-md">3 &nbsp;·&nbsp; Match against the sheet</div>
           <div class="desc" id="matchDesc">Compares the IDs found on each page against the uploaded trafficking sheet.</div>
         </div>
+        <div>
+          <button type="button" class="btn-outline" id="copyReport">Copy report</button>
+          <div class="backend-hint" id="copyReportHint">Pastes as a table into email, as text into Slack or Teams.</div>
+        </div>
       </div>
       <div class="verify-list" id="matchList"></div>
     </div>
   </section>
 
   <footer class="bottom">
-    <span>Extraction is client-side — Verify and Scan open a browser on the backend and load the page</span>
+    <span>The email and the sheet are read in this browser — Scan and Verify drive a real browser on the backend</span>
     <span>No accounts · no saved history · read-and-copy</span>
   </footer>
 </main>
@@ -540,7 +544,42 @@ https://wiadomosci.wp.pl?wfName=281086_3065732_RetailClient_dniowka_01&creName=9
 
 Dzieki, daj znac jak cos nie pyka.`;
 
+// A URL that was cut off before it was pasted. Mail clients and chat apps
+// shorten long links for display, and the visible text is what gets copied —
+// so the tool receives an address that looks fine and is not. Running it
+// silently produced a confident verdict about a page that was never in the
+// state being tested: the truncated tcidma meant the preview never activated,
+// WP served its ordinary rotation, and other advertisers' tags were reported
+// as this campaign's.
+// Proofpoint rewrites every link in a mail it protects, and that is the form
+// the link reaches us in. The rewritten address is not the page — driving it
+// would test urldefense.com — and the original is recoverable, so recover it
+// rather than making a person unwrap links by hand.
+//
+// v3 encodes it as `__<url with * for each escaped char>__;<base64 of those
+// chars>!!…`, and collapses `https://` to `https:/` on the way.
+function unwrapUrlDefense(url) {
+  const m = url.match(/^https?:\/\/urldefense\.com\/v3\/__(.+?)__;(.*?)!!/);
+  if (!m) return url;
+  let chars = "";
+  try {
+    chars = atob(m[2].replace(/-/g, "+").replace(/_/g, "/")
+                     + "=".repeat((4 - m[2].length % 4) % 4));
+  } catch (e) { return url; }
+  let i = 0;
+  const out = m[1].replace(/\*/g, () => chars[i++] ?? "*");
+  return out.replace(/^(https?:)\/(?!\/)/, "$1//");
+}
+
+function truncatedUrlReason(url) {
+  if (/[…]/.test(url)) return "ends with an ellipsis — the link was shortened before it was copied";
+  if (/%[0-9a-f]?$/i.test(url)) return "ends mid-percent-escape — the link is cut off";
+  if (/[?&][^=&]+$/.test(url)) return "ends with a parameter name and no value — the link is cut off";
+  return null;
+}
+
 function clean(u) {
+  u = unwrapUrlDefense(u);
   return u.replace(/&amp;/g, "&").replace(/&#0?38;/g, "&").replace(/[;,.)\]]+$/, "");
 }
 function param(u, k) {
@@ -567,6 +606,7 @@ const VERDICT = {
   missing:         { cls: "fail",  text: "no tag fired" },
   wrong_tag:       { cls: "fail",  text: "WRONG TAG in slot" },
   inconclusive:    { cls: "error", text: "inconclusive" },
+  unattributed:    { cls: "warn",  text: "fired — not attributed" },
 };
 
 // Vendors whose ID is fixed for the advertiser rather than per placement.
@@ -694,8 +734,12 @@ function previewVariant(url) {
 // `creName=mobile` link was being opened in a 1400px window, where the mobile
 // creative cannot serve and the run reports a tag that is fine as missing.
 const MOBILE_HINTS = ["mobile", "navik", "smartfon", "phone", "interstitial", "mob_"];
-const MOBILE_SIZES = ["300x250","300x600","320x480","320x100","320x50","336x280",
-                      "336x480","480x320","600x400","600x200","250x250","300x50"];
+// Only formats that are mobile *and nothing else*. 300x250 and 300x600 were
+// on this list and are the two commonest desktop sidebar sizes — every one of
+// them was being opened in a 390px window, where a desktop creative cannot
+// serve. Anything ambiguous stays desktop unless the label says otherwise.
+const MOBILE_SIZES = ["320x480","480x320","320x100","320x50","300x50","336x480",
+                      "640x100","640x200","640x360","640x960","640x1136"];
 
 function guessViewport(t) {
   const hay = ((t.desc || "") + " " + (t.variant || "") + " " + t.url).toLowerCase();
@@ -840,6 +884,12 @@ function extract(units, sourceLine) {
           if (!variant) return;
           tv = { size: "", variant };
         }
+        const cut = truncatedUrlReason(url);
+        if (cut) {
+          state.parseNote = "skipped a truncated link: " + cut
+            + " — paste the full URL (" + url.slice(0, 60) + "…)";
+          return;
+        }
         const tKey = tv.size + "|" + tv.variant + "|" + url;
         if (state._seenTargets.has(tKey)) return;
         state._seenTargets.add(tKey);
@@ -946,7 +996,14 @@ function runPaste() {
   const isUrlOnly = (l) => /^\s*https?:\/\/\S+\s*$/.test(l);
   const looksLikeName = (l) => {
     const t = l.trim();
-    return !!t && t.length < 120 && !/https?:\/\//.test(t) && !/[<>]/.test(t) && /[a-z]/i.test(t);
+    if (!t || t.length >= 120 || /https?:\/\//.test(t) || /[<>]/.test(t) || !/[a-z]/i.test(t))
+      return false;
+    // A creative name is an identifier, not a sentence. Greetings and asides
+    // sit on their own line above a link just as a name does — "Robert, a to
+    // bieg charytatywny:" was being carried onto the URL and shown as the
+    // creative. Prose gives itself away by commas and word count.
+    if (/,\s/.test(t)) return false;
+    return t.split(/\s+/).length <= 5;
   };
   const units = lines.map((line, i) => {
     let label = "";
@@ -1044,6 +1101,122 @@ function onFile(file) {
     }
   };
   reader.readAsArrayBuffer(file);
+}
+
+// ── the report you send on ──────────────────────────────────────────────
+// Built from the same rows the table shows, so it cannot drift from what is
+// on screen. Written to the clipboard as HTML *and* plain text: email
+// clients take the table, Slack and Teams take the text, and neither has to
+// be reformatted by hand afterwards.
+
+function reportRows() {
+  const out = [];
+  state.testTargets.forEach(t => {
+    const r = state.scan[t.tid];
+    if (!r || !r.vendors) return;
+    const kinds = r.kinds || {};
+    Object.keys(r.vendors).forEach(vendor => {
+      const k = kinds[vendor] || {};
+      const measurement = VENDOR_ROLE[vendor] === "measurement";
+      const ids = Object.values(r.vendors[vendor]).flat();
+      const sheet = [...new Set((MATCH_FIELDS[vendor] || Object.keys(r.vendors[vendor]))
+        .flatMap(f => (r.vendors[vendor][f] || [])
+          .flatMap(v => (((sheetIndex()[vendor] || {})[f] || {})[v] || [])
+            .map(g => g.rowName).filter(Boolean))))];
+      out.push({
+        publisher: sheet.map(publisherOf).find(Boolean) || "—",
+        test: t.desc || targetLabel(t),
+        url: t.url,
+        vendor, measurement,
+        ids: ids.join(", "),
+        sheet: sheet.join("; ") || (measurement ? "n/a — fixed order id" : "not in sheet"),
+        imp: measurement ? "seen" : (k.impression ? "yes" : "no"),
+        clk: measurement ? "n/a"
+             : k.click ? "yes"
+             : r.click_attempted === false ? "not tested"
+             : "no",
+      });
+    });
+  });
+  return out;
+}
+
+function reportText(rows) {
+  const ok = rows.filter(r => r.imp === "yes" && r.clk === "yes").length;
+  const lines = [
+    `Tag verification — ${state.testTargets.length} test page(s), ${rows.length} tag(s) observed`,
+    `${ok} with both impression and click confirmed`,
+    "",
+  ];
+  rows.forEach(r => {
+    const mark = r.measurement ? "•" : (r.imp === "yes" && r.clk === "yes") ? "OK"
+               : r.clk === "not tested" ? "??" : "!!";
+    lines.push(`${mark}  ${r.publisher !== "—" ? r.publisher + " · " : ""}${r.test}`);
+    lines.push(`    ${r.url}`);
+    lines.push(`    ${r.vendor}  ${r.ids}`);
+    lines.push(`    placement: ${r.sheet}`);
+    lines.push(`    impression: ${r.imp}   click: ${r.clk}`);
+    lines.push("");
+  });
+  if (rows.some(r => r.clk === "not tested")) {
+    lines.push("\"not tested\" means the check could not click the creative — it is not");
+    lines.push("evidence that the click tag is missing.");
+  }
+  return lines.join(String.fromCharCode(10));
+}
+
+function reportHtml(rows) {
+  const cell = "padding:6px 10px;border:1px solid #ccc;font-size:13px;";
+  const head = ["Publisher", "Test", "ID", "Placement", "Impression", "Click"]
+    .map(h => `<th style="${cell}background:#333;color:#fff;text-align:left;">${escapeHtml(h)}</th>`).join("");
+  const body = rows.map(r => {
+    // Red is reserved for something that did not fire. A click nobody managed
+    // to attempt is unknown, not failed — colouring it like a defect is how a
+    // correct placement gets raised with a publisher.
+    const failed = !r.measurement && (r.imp === "no" || r.clk === "no");
+    const unknown = !r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed;
+    const tint = failed ? "background:#f8e9e7;" : unknown ? "background:#f6efdd;" : "";
+    return `<tr>
+      <td style="${cell}${tint}">${escapeHtml(r.publisher)}</td>
+      <td style="${cell}${tint}"><b>${escapeHtml(r.test)}</b><br>
+        <span style="font-size:11px;color:#666;">${escapeHtml(r.url)}</span></td>
+      <td style="${cell}${tint}">${escapeHtml(r.vendor + " " + r.ids)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.sheet)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.imp)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.clk)}</td>
+    </tr>`;
+  }).join("");
+  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;">
+    <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function copyReport() {
+  const rows = reportRows();
+  const btn = document.getElementById("copyReport");
+  if (!rows.length) {
+    document.getElementById("copyReportHint").textContent = "nothing scanned yet";
+    return;
+  }
+  const text = reportText(rows);
+  const html = reportHtml(rows);
+
+  const done = () => {
+    const prev = btn.textContent;
+    btn.textContent = "✓ Copied — " + rows.length + " rows";
+    setTimeout(() => { btn.textContent = prev; }, 1800);
+  };
+
+  // Both flavours in one clipboard entry, so the receiving app picks the one
+  // it can render rather than us guessing which app it will be.
+  if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+    navigator.clipboard.write([new ClipboardItem({
+      "text/plain": new Blob([text], { type: "text/plain" }),
+      "text/html": new Blob([html], { type: "text/html" }),
+    })]).then(done).catch(() => { writeClipboard(text); done(); });
+  } else {
+    writeClipboard(text);
+    done();
+  }
 }
 
 function writeClipboard(text) {
@@ -1417,6 +1590,10 @@ function renderScan() {
           // Struck-through would read as "did not fire". We do not know.
           ? '<span class="kind unknown">kind unknown</span>'
           : `<span class="kind ${k.impression ? "on" : "off"}">imp</span>`
+            // A click beacon that was observed is evidence; "we did not manage
+            // to click" is an inference about our own run. Evidence wins —
+            // masking a fired click with "?" because a later fallback logged
+            // a skip is how a working placement reads as untested.
             + `<span class="kind ${k.click ? "on" : r.click_attempted === false ? "unknown" : "off"}"`
             + ` title="${r.click_attempted === false ? "the run never managed to click — not evidence the tag is missing" : ""}">clk</span>`;
       return `<span class="chip-found ${MAIN_VENDORS.includes(v) ? "main" : ""}">`
@@ -1585,8 +1762,15 @@ function renderMatch() {
       const k = (r.kinds || {})[vendor] || {};
       const knowsKinds = Object.keys(k).length > 0;
       const measurement = VENDOR_ROLE[vendor] === "measurement";
-      const mark = (on, unknown) => unknown ? '<span class="kind unknown">?</span>'
-        : `<span class="kind ${on ? "on" : "off"}">${on ? "✓" : "✗"}</span>`;
+      // A beacon that was observed settles the question, so it is checked
+      // first. Testing "unknown" ahead of it let a fallback path's "click
+      // skipped" mask a click the HAR had recorded — the scan section above
+      // showed the same run as ✓ while this table showed ?, from one set of
+      // data. Only the absence of evidence can be unknown.
+      const mark = (on, unknown) =>
+        on ? '<span class="kind on">✓</span>'
+        : unknown ? '<span class="kind unknown">?</span>'
+        : '<span class="kind off">✗</span>';
 
       const publisher = sheetRows.map(publisherOf).find(Boolean) || targetPublisher;
       return { publisher, html: `<tr class="${bad ? "row-bad" : ""}">
@@ -1619,7 +1803,7 @@ function renderMatch() {
   document.getElementById("matchList").innerHTML = body.length
     ? `<table class="match-table">
          <thead><tr>
-           <th>Test &amp; link</th><th>ID found</th><th>Line item</th>
+           <th>Test &amp; link</th><th>ID found</th><th>Placement</th>
            <th>IMP</th><th>CLK</th><th>Verdict</th>
          </tr></thead>
          <tbody>${groups.map(g =>
@@ -1767,6 +1951,7 @@ document.getElementById("vendorPicker").addEventListener("click", (e) => {
   renderVendors(); renderMatch();
 });
 document.getElementById("clearAll").addEventListener("click", clearAll);
+document.getElementById("copyReport").addEventListener("click", copyReport);
 
 document.getElementById("filters").addEventListener("click", (e) => {
   const filterBtn = e.target.closest("[data-filter]");

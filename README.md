@@ -59,6 +59,13 @@ client's macro-generated `wfName=` tracking string verbatim inside a
 publisher tag URL — those substrings were substituted in place rather than
 removed, since removing them would have broken the URL's structure.
 
+One deliberate exception: `frontend/index.html` ships three real
+advertiser names in the "advertiser" suggestion list. That field is what tells
+the vision fallback whose creative to click, and the page is a tool someone
+uses daily rather than a sample — typing the client name every run to keep a
+README claim tidy would be the wrong trade. The names are the only place they
+appear outside `scripts/`.
+
 Publisher domains and site structure are left as-is — that's public
 information, not client-confidential, and it's the part that actually shows
 what the tooling handles (Polish news/portal consent flows, ad-slot lazy
