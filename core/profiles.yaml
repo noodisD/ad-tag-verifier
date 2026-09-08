@@ -1,0 +1,138 @@
+# Per-site behaviour. Adding a publisher should be an entry here, not a new
+# script — that is the whole point of this file.
+#
+# MATCHING: every profile whose `match` appears in the URL applies, merged in
+# file order (later wins). So put broad domain profiles first (they set
+# patience) and narrow URL-shape profiles after (they set strategy). A TVN
+# GAM-preview URL picks up TVN's patience *and* the preview handshake.
+#
+# All timings below are measured, not guessed — see comments.
+
+viewports:
+  desktop:
+    width: 1400
+    height: 900
+    is_mobile: false
+    user_agent: >-
+      Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36
+  mobile:
+    width: 390
+    height: 844
+    is_mobile: true
+    has_touch: true
+    user_agent: >-
+      Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36
+      (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36
+
+defaults:
+  strategy: load
+  patience: 45          # seconds to wait for a beacon before giving up
+  poll_interval: 0.5
+  settle_after_consent: 3
+  scroll_passes: 6
+  scroll_step: 500
+  click: true           # attempt click verification after an impression
+  headless: true
+
+profiles:
+
+  # ── publisher domains: how long their ad stack actually takes ──────────
+
+  - name: infor
+    match: ["dziennik.pl"]
+    # ~725 requests of prebid/sync before the creative. Measured: impression
+    # at 96.9s. A 60s budget reports "no tags" on a page that is fine.
+    patience: 130
+    scroll_passes: 8
+
+  - name: wp
+    match: ["wp.pl", "pudelek.pl"]
+    patience: 70          # measured 25-60s depending on slot depth
+    exclude_links: "kup\\.|newslettery|kontakt24|formularz|/plus/(zaloguj|przetestuj)|na-zywo|logowanie|rejestracja|koszyk|checkout|platnosc"
+
+  - name: tvn
+    match: ["tvn24.pl"]
+    patience: 80
+    exclude_links: "kup\\.tvn24|newslettery|kontakt24|formularz|/plus/(zaloguj|przetestuj)|na-zywo|/oferta"
+
+  - name: bonnier
+    match: ["pb.pl", "bankier.pl"]
+    patience: 75
+
+  - name: agora
+    match: ["gazeta.pl", "sport.pl"]
+    patience: 60
+
+  - name: polsat
+    match: ["interia.pl"]
+    patience: 60
+
+  - name: polskapresse
+    # Regional titles (nto.pl, dziennikbaltycki.pl, gazetakrakowska.pl …) all
+    # run the same ad stack, so one entry covers the group.
+    match: ["nto.pl", "polskapresse", "gazetakrakowska.pl", "dziennikbaltycki.pl",
+            "dziennikzachodni.pl", "gazetalubuska.pl", "expressilustrowany.pl"]
+    patience: 90
+    scroll_passes: 8
+
+  # ── URL shapes: how the page has to be driven ─────────────────────────
+
+  - name: gam-preview
+    match: ["google_preview=", "live_preview_config"]
+    # The first load only sets the preview cookie; the creative renders on the
+    # second. Loading once and reporting "none" is a false negative, not a
+    # finding.
+    strategy: gam_preview
+
+  - name: creative-preview
+    match:
+      - "displayvideo.google.com"
+      - "/doubleclick/preview/"
+      - "push-ad.com/preview"
+      - "backend.adquery.io"
+    # Isolated creative, no competing inventory on the page. This is the case
+    # automation handles perfectly, so keep it cheap.
+    strategy: load
+    patience: 25
+    scroll_passes: 2
+
+  - name: adnami-sandbox
+    match: ["preview.adnami.io"]
+    # The creative renders inside a sandboxed device simulator that blocks
+    # navigation by design. Clicks cannot be verified here by any automated
+    # means — attempting it produces a "fail" that says nothing about the tag.
+    strategy: watch
+    click: false
+    notes: "sandbox blocks navigation; click must be checked by a human"
+
+  - name: wp-preview
+    match: ["wfName="]
+    # WP's own preview links, and the formats they carry are the large ones:
+    # screening, gigaboard, wallpaper. Those are painted as page background or
+    # as an overlay rather than served in a standard creative iframe, so the
+    # click targeting finds nothing to aim at and logs "click skipped".
+    # Measured on four FuelClient placements: the CM360 impression fired
+    # every time and the click was never attempted — which reads as a missing
+    # click tag while in fact saying nothing about it at all.
+    #
+    # So hand the browser over. Clicking these takes a person two seconds;
+    # capturing the evidence is the part worth automating.
+    # Left on `load` deliberately. Frame targeting will find nothing here, but
+    # the vision fallback then gets a turn, and its click only counts if the
+    # click beacon carries this campaign's id — so a wrong guess is discarded
+    # rather than reported. When it cannot locate the creative the run says
+    # "click not tested" and watch mode is the honest next step, but that is
+    # a decision for the person reading the result, not a foregone one.
+    strategy: load
+    watch_timeout: 180
+    notes: "large WP formats have no clickable frame; vision fallback tries, watch is the backstop"
+
+  - name: commercial-break
+    match: ["Baner_Commercial_Break", "commercialFull", "CommercialBreakMobile"]
+    # The overlay only appears on a real in-page navigation. page.goto() never
+    # triggers it, and a synthetic element.click() is ignored because it
+    # carries isTrusted=false — it has to be a real mouse click on a link.
+    strategy: navigation_click
+    patience: 90
+    max_link_clicks: 8
