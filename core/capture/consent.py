@@ -40,20 +40,51 @@ SELECTORS = [
     "button[class*='accept']",
 ]
 
-_JS = """(phrases) => {
-    const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-    const els = document.querySelectorAll(
-        "button, a[role=button], div[role=button], [class*=accept], [id*=accept]");
-    for (const p of phrases) {
-        for (const b of els) {
-            const t = norm(b.innerText);
-            if (t === p || t.startsWith(p)) {
-                const r = b.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0) { b.click(); return b.innerText.trim(); }
+# Deliberately not restricted to <button>. TVP's accept control is a bare
+# `<div class="tvp-covl__ab">` — no role, no `accept` in the class, no id — so
+# a selector list built from button-ish shapes walks straight past it and the
+# run then reports "no tags" on a page that never got past the wall. Text is
+# the only thing these controls reliably have in common, so match on text and
+# use the box to tell a control from the container around it.
+_FIND = r"""(phrases) => {
+    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const found = [];
+    const walk = (root, depth) => {
+        if (depth > 6) return;
+        let els;
+        try { els = root.querySelectorAll('*'); } catch (e) { return; }
+        for (const e of els) {
+            const t = norm(e.innerText || e.textContent);
+            for (let i = 0; i < phrases.length; i++) {
+                const p = phrases[i];
+                // The label and little else: a wrapper holding the whole
+                // policy text starts with the phrase too, and clicking that
+                // hits nothing.
+                if (!t.startsWith(p) || t.length > p.length + 12) continue;
+                const r = e.getBoundingClientRect();
+                if (r.width < 30 || r.height < 10 || r.width > 700 || r.height > 160) continue;
+                if (r.bottom < 0 || r.top > (window.innerHeight || 0) + 2000) continue;
+                found.push({rank: i, area: r.width * r.height,
+                            x: Math.round(r.x + r.width / 2),
+                            y: Math.round(r.y + r.height / 2),
+                            label: (e.innerText || e.textContent || '').trim().slice(0, 60)});
+                break;
             }
+            if (e.shadowRoot) walk(e.shadowRoot, depth + 1);
         }
-    }
-    return null;
+    };
+    walk(document, 0);
+    // Best phrase first, then the tightest box around it.
+    found.sort((a, b) => a.rank - b.rank || a.area - b.area);
+    return found.slice(0, 4);
+}"""
+
+# Whether any accept label is still on the page. A CMP that ignored the click
+# leaves it there, and "clicked something" is not the same claim as "the wall
+# is gone".
+_STILL = r"""(phrases) => {
+    const t = (document.body.innerText || '').replace(/\s+/g, ' ').toLowerCase();
+    return phrases.some(p => t.includes(p));
 }"""
 
 
@@ -62,15 +93,39 @@ def accept(page, settle=3.0):
 
     The wall is script-rendered after load, so this waits before looking:
     checking straight after goto reliably finds nothing.
+
+    Clicks in the top frame go through the mouse rather than `element.click()`.
+    A CMP is entitled to ignore a synthetic click — it carries
+    `isTrusted=false` — and one that does leaves the page sitting behind the
+    wall while the run reports consent as handled.
     """
     time.sleep(settle)
 
-    for target in [page] + list(page.frames):
+    try:
+        for cand in page.evaluate(_FIND, PHRASES):
+            try:
+                page.mouse.click(cand["x"], cand["y"])
+            except Exception:
+                continue
+            time.sleep(2)
+            if not still_up(page):
+                return cand["label"][:60]
+    except Exception:
+        pass
+
+    # Sub-frame CMPs: the coordinates above are frame-relative and would land
+    # in the wrong place, so these keep the in-page click.
+    for frame in page.frames:
+        if frame is page.main_frame:
+            continue
         try:
-            clicked = target.evaluate(_JS, PHRASES)
-            if clicked:
+            for cand in frame.evaluate(_FIND, PHRASES):
+                frame.evaluate(
+                    "(c) => { const el = document.elementFromPoint(c.x, c.y);"
+                    "  if (el) el.click(); }", cand)
                 time.sleep(2)
-                return clicked[:60]
+                if not still_up(page):
+                    return cand["label"][:60]
         except Exception:
             pass
 
@@ -86,6 +141,14 @@ def accept(page, settle=3.0):
                 pass
 
     return None
+
+
+def still_up(page):
+    """Is an accept label still on the page?"""
+    try:
+        return bool(page.evaluate(_STILL, PHRASES))
+    except Exception:
+        return False
 
 
 def alive(page):
