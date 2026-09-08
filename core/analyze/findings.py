@@ -17,6 +17,13 @@ IMPRESSION_ONLY = "impression_only"
 MISSING = "missing"
 WRONG_TAG = "wrong_tag"
 INCONCLUSIVE = "inconclusive"
+# Something fired, but nothing said which ID was supposed to. Kept apart from
+# PASS because "an impression happened" and "this campaign's impression
+# happened" are different claims: measured on kobieta.wp.pl, the impressions
+# on the page belonged to two unrelated advertisers while the campaign's
+# own Adform tag never fired at all, and reporting that as a pass is exactly
+# the false positive this tool exists to prevent.
+UNATTRIBUTED = "unattributed"
 
 
 def beacons_from_har(har_path):
@@ -98,6 +105,10 @@ def analyze(meta, expected_id=None, require_click=True, rederive=True):
 
     if meta.get("error"):
         verdict = INCONCLUSIVE
+    elif not expected_id and imp:
+        # No ID to check against, so what fired can be reported but not
+        # credited to this campaign.
+        verdict = UNATTRIBUTED
     elif imp and (clk or not require_click):
         verdict = PASS
     elif imp:
@@ -148,6 +159,7 @@ VERDICT_LABEL = {
     MISSING: "no tag fired",
     WRONG_TAG: "WRONG TAG in slot",
     INCONCLUSIVE: "inconclusive",
+    UNATTRIBUTED: "fired, not attributed",
 }
 
 

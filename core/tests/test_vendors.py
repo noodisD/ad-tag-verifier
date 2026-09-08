@@ -112,3 +112,42 @@ class TestServingVsMeasurement:
         # DV and ABT ride alongside; a campaign is not "delivering" because a
         # measurement vendor fired.
         assert vendors.SERVING_VENDORS == {"Adform", "CM360"}
+
+
+# ── an impression nobody asked for is not this campaign's ────────────────
+
+from core.analyze import findings as _f
+
+
+def _meta(beacons, **kw):
+    m = {"beacons": beacons, "error": None, "events": []}
+    m.update(kw)
+    return m
+
+
+def _b(kind, ident, vendor="Adform"):
+    return {"vendor": vendor, "kind": kind, "id": ident, "evidence": "fired"}
+
+
+def test_impression_without_an_expected_id_is_not_a_pass():
+    """Measured on kobieta.wp.pl: the impressions on the page belonged to
+    other advertisers while the campaign's own tag never fired. Calling that
+    a pass is the false positive this tool exists to prevent."""
+    r = _f.analyze(_meta([_b(_f.vendors.IMPRESSION, "455254508", "CM360")]),
+                   expected_id=None, rederive=False)
+    assert r["verdict"] == _f.UNATTRIBUTED
+    assert r["verdict"] != _f.PASS
+
+
+def test_the_same_beacon_with_a_matching_expected_id_is_a_pass():
+    r = _f.analyze(_meta([_b(_f.vendors.IMPRESSION, "89750125"),
+                          _b(_f.vendors.CLICK, "89750125")]),
+                   expected_id="89750125", rederive=False)
+    assert r["verdict"] == _f.PASS
+
+
+def test_somebody_elses_tag_in_the_slot_is_named_as_that():
+    r = _f.analyze(_meta([_b(_f.vendors.IMPRESSION, "455254508", "CM360")]),
+                   expected_id="89750125", rederive=False)
+    assert r["verdict"] == _f.WRONG_TAG
+    assert "455254508" in r["other_serving_ids"]
