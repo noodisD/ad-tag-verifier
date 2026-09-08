@@ -122,14 +122,6 @@
     color: var(--color-accent-700); border-bottom: 1px solid var(--color-accent-300);
   }
 
-  aside.legend { border: 2px solid var(--color-divider); padding: var(--space-4); }
-  aside.legend .title { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--color-neutral-600); margin-bottom: var(--space-3); }
-  .legend-grid { display: grid; gap: var(--space-3); }
-  .legend-item { display: grid; gap: 2px; padding-bottom: var(--space-3); border-bottom: 1px solid var(--color-neutral-300); }
-  .legend-item:last-child { border-bottom: none; padding-bottom: 0; }
-  .legend-item .name { font-family: var(--font-heading); font-weight: 700; font-size: 14px; }
-  .legend-item .where { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-neutral-700); }
-  .legend-item .fields { font-size: 12px; }
 
   section.phase { margin-top: var(--space-8); border-top: 2px solid var(--color-divider); padding-top: var(--space-6); }
 
@@ -167,11 +159,6 @@
   }
   .filter-btn.on { background: var(--color-accent); color: #fff; }
   .filter-btn .count { font-family: var(--font-mono); opacity: .7; }
-  .filter-copy {
-    padding: 0 var(--space-3); background: none; border: none; border-left: 1px dashed var(--color-neutral-400);
-    font-family: var(--font-mono); font-size: 11px; color: var(--color-neutral-700); cursor: pointer; white-space: nowrap;
-  }
-  .filter-copy:hover { color: var(--color-accent); background: var(--color-accent-100); }
 
   .table-wrap { border: 2px solid var(--color-text); max-height: 560px; overflow: auto; }
   table#resultsTable { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -353,7 +340,6 @@
   <div class="actions-row">
     <span class="backend-dot" id="backendDot"></span>
     <span class="label-sm" id="backendLabel">backend: checking…</span>
-    <span class="label-sm"><a href="https://github.com/noodisD/ad-tag-verifier">ad-tag-verifier</a></span>
   </div>
 </header>
 
@@ -371,7 +357,7 @@
       <div id="pastePanel">
         <textarea id="pasteInput" spellcheck="false" placeholder="Paste the whole email, Slack message or block of tag copy. Prose, signatures and broken line-wraps are fine — nothing needs cleaning first."></textarea>
         <div class="actions-row" style="margin-top: var(--space-3);">
-          <button type="button" class="btn-accent" id="runPaste">Extract IDs</button>
+          <button type="button" class="btn-accent" id="runPaste">Read the email</button>
           <span class="hint">or ⌘ + Enter. Nothing is uploaded — parsing runs in this browser tab.</span>
         </div>
       </div>
@@ -387,26 +373,6 @@
       </div>
     </div>
 
-    <aside class="legend">
-      <div class="title">What it recognizes</div>
-      <div class="legend-grid">
-        <div class="legend-item">
-          <div class="name">Adform</div>
-          <div class="where">adfserve · adform.net/C/</div>
-          <div class="fields">pulls <b>bn=</b> (impression &amp; click)</div>
-        </div>
-        <div class="legend-item">
-          <div class="name">CM360</div>
-          <div class="where">ddm/trackimp · ddm/trackclk</div>
-          <div class="fields">pulls <b>dc_trk_aid</b>, <b>dc_trk_cid</b>, <b>N…/B…</b></div>
-        </div>
-        <div class="legend-item">
-          <div class="name">Ad Manager</div>
-          <div class="where">google_preview query string</div>
-          <div class="fields">pulls <b>iu</b>, <b>lineItemId</b>, <b>creativeId</b>, <b>gdfp_req</b></div>
-        </div>
-      </div>
-    </aside>
   </section>
 
   <section class="phase" id="parsingSection" hidden>
@@ -428,8 +394,6 @@
         <div id="sourceLine"></div>
       </div>
       <div class="actions-row">
-        <span class="badge">A</span>
-        <button type="button" class="btn-accent" id="copyAll">Copy as Python URLS list</button>
         <button type="button" class="btn-outline" id="clearAll" title="start a new session — forgets everything extracted so far">Clear</button>
       </div>
     </div>
@@ -445,7 +409,7 @@
                 <th class="c-idtype">ID type</th>
                 <th>Value</th>
                 <th class="c-source">Source</th>
-                <th class="c-copy"><span style="display:inline-flex;align-items:center;gap:6px;"><span>Copy</span><span class="badge" style="width:15px;height:15px;font-size:10px;">B</span></span></th>
+                <th class="c-copy"><span style="display:inline-flex;align-items:center;gap:6px;"><span>Copy</span><span class="badge" style="width:15px;height:15px;font-size:10px;">A</span></span></th>
               </tr>
             </thead>
             <tbody id="resultsBody"></tbody>
@@ -463,23 +427,13 @@
         <div class="note">
           <span class="badge">A</span>
           <div class="body">
-            <div class="title">Copy as Python URLS list</div>
-            <div class="desc">One tuple per source URL, in the shape every <code class="inline">verify_*.py</code> already uses. On click → label swaps to <b>✓ Copied — N placements</b> for 1.5s, then reverts. No toast.</div>
-            <div class="code">URLS = [<br>&nbsp;&nbsp;&nbsp;&nbsp;("Adform 1", {88915001}, "https://…"),<br>]</div>
-            <div class="sub">The platform chips carry the same action scoped to one platform (<code class="inline">.py</code> on the chip), for cherry-picking a single vendor out of a mixed paste.</div>
-          </div>
-        </div>
-
-        <div class="note">
-          <span class="badge">B</span>
-          <div class="body">
             <div class="title">Per-row copy</div>
             <div class="desc">Copies the raw value only, no quotes. On click → the label becomes <b>✓ copied</b> for 1.5s; the row keeps its tint so the eye doesn't lose its place. Row order never changes.</div>
           </div>
         </div>
 
         <div class="note">
-          <span class="badge outline">C</span>
+          <span class="badge outline">B</span>
           <div class="body">
             <div class="title">Source, on hover</div>
             <div class="desc">The cell shows the reference only — <code class="inline">Sheet1!C14</code> or <code class="inline">line 7</code>. Hovering the row reveals the full line or cell it was pulled from, so a bad match is spottable without adding weight to every row.</div>
@@ -502,20 +456,6 @@
       <div class="verify-list" id="verifyList"></div>
     </div>
 
-    <div class="verify-section" id="pairSection" hidden>
-      <div class="verify-head">
-        <div>
-          <div class="headline-md">0 &nbsp;·&nbsp; Pair test URLs with the sheet</div>
-          <div class="desc">Works out which sheet row each test URL is meant to carry. Clear cases are settled by name scoring; only what that cannot settle is put to a model, which is allowed to decline. Every suggestion needs your acceptance — and none of this decides whether a tag fired, only what to expect.</div>
-        </div>
-        <div>
-          <button type="button" class="btn-outline" id="runPair" disabled>Pair with sheet</button>
-          <div class="backend-hint" id="pairHint"></div>
-        </div>
-      </div>
-      <div class="verify-list" id="pairList"></div>
-    </div>
-
     <div class="verify-section" id="scanSection" hidden>
       <div class="verify-head">
         <div>
@@ -526,11 +466,11 @@
           <button type="button" class="btn-outline" id="runScan" disabled>Scan test pages</button>
           <div class="backend-hint">
             <label for="advertiser">advertiser</label>
-            <input id="advertiser" type="text" list="advertisers" placeholder="e.g. FuelClient" size="22">
+            <input id="advertiser" type="text" list="advertisers" placeholder="e.g. Shell" size="22">
             <datalist id="advertisers">
+              <option value="Pepco"></option>
               <option value="BankClient"></option>
-              <option value="FuelClient"></option>
-              <option value="RetailClient"></option>
+              <option value="Shell"></option>
             </datalist>
             <div>Named so a page carrying several advertisers can be told apart. Leave empty and the tool will not guess which creative is yours.</div>
           </div>
@@ -749,6 +689,22 @@ function previewVariant(url) {
 
 // A preview link may carry no size, so join only the parts that exist —
 // otherwise the row reads "_giga-desktop".
+// Which viewport a test belongs in. The same page is a different test on
+// mobile, and the backend defaults to desktop when told nothing — so a
+// `creName=mobile` link was being opened in a 1400px window, where the mobile
+// creative cannot serve and the run reports a tag that is fine as missing.
+const MOBILE_HINTS = ["mobile", "navik", "smartfon", "phone", "interstitial", "mob_"];
+const MOBILE_SIZES = ["300x250","300x600","320x480","320x100","320x50","336x280",
+                      "336x480","480x320","600x400","600x200","250x250","300x50"];
+
+function guessViewport(t) {
+  const hay = ((t.desc || "") + " " + (t.variant || "") + " " + t.url).toLowerCase();
+  if (MOBILE_HINTS.some(h => hay.includes(h))) return "mobile";
+  if (t.size && MOBILE_SIZES.includes(t.size)) return "mobile";
+  if (t.size && parseInt(t.size, 10) >= 700) return "desktop";
+  return "desktop";
+}
+
 function targetLabel(t) {
   return [t.size, t.variant].filter(Boolean).join("_") || t.url.slice(0, 60);
 }
@@ -824,9 +780,6 @@ const state = {
   verifying: false,
   runError: "",        // why the last verify run stopped, if it did
   pair: {},            // tid -> match entry, plus `accepted`
-  pairing: false,
-  pairError: "",
-  modelUsed: null,
   scan: {},            // tid -> {status, vendors:{vendor:{field:[values]}}}
   scanning: false,
   scanError: "",
@@ -968,7 +921,6 @@ function clearAll() {
   state.filter = "All"; state.verify = {}; state.verifying = false; state.phase = "idle";
   state.scan = {}; state.scanning = false;
   state.runError = ""; state.scanError = ""; state.parseNote = "";
-  state.pair = {}; state.pairing = false; state.pairError = ""; state.modelUsed = null;
   state.scanRunId = null; state.watchIds = [];
   state.selectedVendors.clear(); state.vendorTouched = false;
   state._seenRows.clear(); state._seenTargets.clear();
@@ -1094,11 +1046,6 @@ function onFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
-function pythonList(platform) {
-  const g = platform === "All" ? state.groups : state.groups.filter(x => x.platform === platform);
-  const body = g.map(x => '    ("' + x.label + '", {' + (x.primary || "") + '}, "' + x.url + '"),').join("\n");
-  return "URLS = [\n" + body + "\n]\n";
-}
 function writeClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -1320,118 +1267,11 @@ function endWatch() {
     .catch(err => { state.scanError = noteApiError(err); renderScan(); });
 }
 
-function pairInputs() {
-  // Give both sides real words. A test URL's own path usually names the
-  // creative ("750x200_wide-double-billboard"), and that is exactly the
-  // wording an email uses — far more to match on than a size alone.
-  const fromPath = (url) => {
-    try {
-      return decodeURIComponent(new URL(url).pathname)
-        .split("/").filter(Boolean).slice(-2).join(" ").replace(/[_\-]+/g, " ");
-    } catch (e) { return ""; }
-  };
-  const emailItems = state.testTargets.map(t => ({
-    id: t.tid,
-    label: [targetLabel(t), fromPath(t.url)]
-      .filter(Boolean).join(" ").trim() || t.url,
-    url: t.url,
-  }));
-  const sheetRows = state.groups
-    .filter(g => g.primary && g.rowName)
-    .map(g => ({ name: g.rowName, expected_id: g.primary, gid: g.gid }));
-  return { emailItems, sheetRows };
-}
-
-function runAiMatch() {
-  const { emailItems, sheetRows } = pairInputs();
-  if (!emailItems.length || !sheetRows.length || state.pairing) return;
-
-  state.pairing = true;
-  state.pairError = "";
-  renderPair();
-
-  // Longer than the other calls on purpose: this one may consult a model,
-  // once per unsettled row. The 8s default aborted a request the backend
-  // went on to answer fine at 11s — and an abort is indistinguishable from
-  // an unreachable server, so the UI reported the backend as down.
-  apiPost("/match", { email_items: emailItems, sheet_rows: sheetRows }, 120000)
-    .then(data => {
-      state.pair = {};
-      (data.results || []).forEach((r, i) => {
-        const tid = emailItems[i] && emailItems[i].id;
-        if (tid) state.pair[tid] = Object.assign({}, r, { accepted: !r.needs_review });
-      });
-      state.modelUsed = !!data.model_used;
-      state.pairing = false;
-      renderPair();
-    })
-    .catch(err => {
-      state.pairing = false;
-      state.pairError = noteApiError(err);
-      renderPair();
-    });
-}
-
-function renderPair() {
-  if (state.phase !== "results") return;
-  const section = document.getElementById("pairSection");
-  const { emailItems, sheetRows } = pairInputs();
-  // Only meaningful once the session holds both halves of the comparison.
-  section.hidden = !(emailItems.length && sheetRows.length);
-  if (section.hidden) return;
-
-  const btn = document.getElementById("runPair");
-  btn.disabled = state.backend !== "up" || state.pairing;
-  btn.textContent = state.pairing ? "Pairing…"
-    : (Object.keys(state.pair).length ? "Pair again" : "Pair with sheet");
-
-  const hint = document.getElementById("pairHint");
-  const pending = Object.values(state.pair).filter(p => !p.accepted).length;
-  hint.textContent = state.pairError ? state.pairError
-    : state.backend !== "up" ? "start it: cd backend && python app.py"
-    : pending ? pending + " need your review"
-    : Object.keys(state.pair).length && state.modelUsed === false
-      ? "settled without the model" : "";
-  hint.classList.toggle("err", !!state.pairError);
-
-  document.getElementById("pairList").innerHTML = state.testTargets.map(t => {
-    const p = state.pair[t.tid];
-    const label = targetLabel(t);
-    if (!p) {
-      return `<div class="verify-row">
-          <span class="plat">${escapeHtml(label)}</span>
-          <span class="u">—</span>
-          <span class="status-pill pending">not paired</span>
-        </div>`;
-    }
-    const pill = p.accepted ? "pass" : p.expected_id ? "warn" : "fail";
-    const text = p.accepted ? "accepted" : p.expected_id ? "confirm?" : "no match";
-    const src = p.source === "model" ? "model" : p.source === "explicit" ? "id in email" : "name score";
-    const btns = p.expected_id && !p.accepted
-      ? `<button type="button" class="btn-mini" data-accept="${escapeHtml(t.tid)}">accept</button>
-         <button type="button" class="btn-mini" data-reject="${escapeHtml(t.tid)}">reject</button>`
-      : "";
-    return `
-      <div class="verify-row">
-        <span class="plat">${escapeHtml(label)}</span>
-        <span class="u" title="${escapeHtml(p.matched_row || "")}">${escapeHtml(p.matched_row || "no row matched")}</span>
-        <span class="status-pill ${pill}">${escapeHtml(text)}</span>
-      </div>
-      <div class="verify-row" style="grid-template-columns: 1fr auto;">
-        <div class="verify-observed">expects <strong>${escapeHtml(p.expected_id || "—")}</strong>
-          · ${escapeHtml(src)} ${p.confidence ? "· confidence " + p.confidence : ""}
-          ${p.warnings.map(w => `<div class="match-detail bad">${escapeHtml(w)}</div>`).join("")}
-        </div>
-        <div>${btns}</div>
-      </div>`;
-  }).join("");
-}
-
 // ── Step 1: scan ────────────────────────────────────────────────────────
 
 function runScan() {
   const advertiser = (document.getElementById("advertiser").value || "").trim();
-  const targets = state.testTargets.map(t => ({ id: t.tid, url: t.url, advertiser }));
+  const targets = state.testTargets.map(t => ({ id: t.tid, url: t.url, advertiser, viewport: guessViewport(t) }));
   if (!targets.length || state.scanning) return;
 
   const token = ++runToken;
@@ -1621,24 +1461,15 @@ function renderVendors() {
 // ── Step 3: match discovered IDs against the sheet ──────────────────────
 
 // vendor → field → value → [sheet groups carrying it]
-// The ID this test URL was paired with, once a person accepted the pairing.
-// Only an accepted pairing counts: a suggestion the reviewer has not looked
-// at is not a basis for calling a publisher's tag wrong.
-// The publisher a sheet row belongs to. Trafficking rows are named
-// `Publisher_direct_300x250-Rectangle_…`, so the prefix before the buy type
-// is the publisher — the same grouping the campaign is actually managed in,
-// and the unit a person raises a problem with.
+// Which publisher a sheet row belongs to, read off the row's own name. Used
+// only to group the match table; a row it cannot read falls under
+// "Unassigned" rather than being guessed at.
 function publisherOf(rowName) {
   if (!rowName) return null;
-  const m = String(rowName).match(/^\s*([A-Za-z0-9.\- ]{2,30}?)[_\s]+(direct|native|programmatic|rtb)/i);
+  const m = String(rowName).match(/^\s*([A-Za-z0-9.\- ]{2,30}?)[_\s]+(direct|native|programmatic|rtb)/i);
   if (m) return m[1].trim();
   const first = String(rowName).trim().split(/[_\s]/)[0];
   return first && /[a-z]/i.test(first) ? first : null;
-}
-
-function pairedIdFor(tid) {
-  const p = state.pair[tid];
-  return p && p.accepted && p.expected_id ? p.expected_id : null;
 }
 
 function sheetIndex() {
@@ -1721,14 +1552,9 @@ function renderMatch() {
           const hits = (((idx[vendor] || {})[f] || {})[val]) || [];
           if (!haveSheet) return { f, val, cls: "", note: "found on page" };
           if (!hits.length) return { f, val, cls: "bad", note: "not in sheet" };
-          // The ID is the identity. Two things are then checked against it,
-          // and neither guesses: both sides state their format in writing.
-          const expected = pairedIdFor(t.tid);
-          if (expected && val !== expected) {
-            return { f, val, cls: "bad",
-                     note: "WRONG TAG — this placement expects " + expected };
-          }
-
+          // The ID is the identity, and the sheet has it. What remains worth
+          // checking is the format, and both sides state it in writing.
+          //
           // The format the email gave this creative, against the format the
           // sheet books that same ID under. This is the stale-export failure
           // in its exact shape: bn 90069246 described as 120x600 in one
@@ -1744,9 +1570,8 @@ function renderMatch() {
                            + ", sheet books this ID as " + booked.join(" / ") };
           }
 
-          const note = expected ? "matches the paired row" : "in sheet";
           return { f, val, cls: "ok",
-                   note: t.size && booked.includes(t.size) ? note + " · " + t.size : note };
+                   note: t.size && booked.includes(t.size) ? "in sheet · " + t.size : "in sheet" };
         });
       }).flat();
       const bad = checks.some(c => c.cls === "bad");
@@ -1794,7 +1619,7 @@ function renderMatch() {
   document.getElementById("matchList").innerHTML = body.length
     ? `<table class="match-table">
          <thead><tr>
-           <th>Test &amp; link</th><th>ID found</th><th>Sheet row</th>
+           <th>Test &amp; link</th><th>ID found</th><th>Line item</th>
            <th>IMP</th><th>CLK</th><th>Verdict</th>
          </tr></thead>
          <tbody>${groups.map(g =>
@@ -1855,7 +1680,6 @@ function renderResults() {
       <button type="button" class="filter-btn ${s.filter === n ? "on" : ""}" data-filter="${escapeHtml(n)}">
         <span>${escapeHtml(n)}</span><span class="count">${counts[n] || 0}</span>
       </button>
-      ${n !== "All" ? `<button type="button" class="filter-copy" data-copy-platform="${escapeHtml(n)}" title="copy this platform as a Python URLS list">.py</button>` : ""}
     </div>
   `).join("");
 
@@ -1891,7 +1715,6 @@ function render() {
   renderPhase();
   renderResults();
   renderVerify();
-  renderPair();
   renderScan();
   renderVendors();
   renderMatch();
@@ -1911,20 +1734,9 @@ function render() {
   });
 })();
 
-document.getElementById("runPair").addEventListener("click", runAiMatch);
 // The button lives inside a re-rendered hint, so it is delegated.
 document.getElementById("scanHint").addEventListener("click", (e) => {
   if (e.target.closest("#endWatch")) endWatch();
-});
-document.getElementById("pairList").addEventListener("click", (e) => {
-  const acc = e.target.closest("[data-accept]"), rej = e.target.closest("[data-reject]");
-  if (acc) { const p = state.pair[acc.dataset.accept]; if (p) p.accepted = true; renderPair(); }
-  // Rejecting clears the expectation rather than substituting a guess: an
-  // unpaired URL is an honest gap, a wrong one is a false verdict.
-  if (rej) { const p = state.pair[rej.dataset.reject];
-    if (p) { p.expected_id = null; p.matched_row = null; p.accepted = false;
-             p.warnings = ["rejected — pair it by hand before running"]; }
-    renderPair(); }
 });
 document.getElementById("tabPaste").addEventListener("click", () => setMode("paste"));
 document.getElementById("tabFile").addEventListener("click", () => setMode("file"));
@@ -1956,25 +1768,9 @@ document.getElementById("vendorPicker").addEventListener("click", (e) => {
 });
 document.getElementById("clearAll").addEventListener("click", clearAll);
 
-document.getElementById("copyAll").addEventListener("click", (e) => {
-  writeClipboard(pythonList("All"));
-  const btn = e.currentTarget;
-  const prev = btn.textContent;
-  btn.textContent = "✓ Copied — " + state.groups.length + " placements";
-  setTimeout(() => { btn.textContent = prev; }, 1500);
-});
-
 document.getElementById("filters").addEventListener("click", (e) => {
   const filterBtn = e.target.closest("[data-filter]");
-  if (filterBtn) { state.filter = filterBtn.dataset.filter; renderResults(); return; }
-  const copyBtn = e.target.closest("[data-copy-platform]");
-  if (copyBtn) {
-    const platform = copyBtn.dataset.copyPlatform;
-    writeClipboard(pythonList(platform));
-    const prev = copyBtn.textContent;
-    copyBtn.textContent = "✓ .py";
-    setTimeout(() => { copyBtn.textContent = prev; }, 1500);
-  }
+  if (filterBtn) { state.filter = filterBtn.dataset.filter; renderResults(); }
 });
 
 document.getElementById("resultsBody").addEventListener("click", (e) => {

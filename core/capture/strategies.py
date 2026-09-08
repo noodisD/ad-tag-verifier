@@ -160,18 +160,41 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
         _log(meta, "click skipped: no clickable creative frame found")
         return
 
+    vp = settings["viewport"]
+
+    def centre():
+        b = None
+        try:
+            b = el.bounding_box()
+        except Exception:
+            pass
+        b = b or box
+        return b, b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+
     try:
         el.scroll_into_view_if_needed(timeout=5000)
         time.sleep(1)
-        box = el.bounding_box() or box
     except Exception:
         pass
+    _box, cx, cy = centre()
 
-    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-    vp = settings["viewport"]
     if not (0 < cx < vp["width"] and 0 < cy < vp["height"]):
-        # Clicking a clamped fallback coordinate is how the wrong ad gets
-        # clicked and reported as this campaign's. Refuse instead.
+        # Still off-screen. scroll_into_view_if_needed moves the minimal
+        # distance and gives up on containers it cannot scroll, which leaves a
+        # sidebar creative sitting below the fold — measured on
+        # kultura.onet.pl, where slot.right reported y=1654 in a 900px window
+        # and the click was refused while slot.top clicked fine. Centre it
+        # explicitly and measure again.
+        try:
+            el.evaluate("e => e.scrollIntoView({block: 'center', inline: 'nearest'})")
+            time.sleep(1)
+        except Exception:
+            pass
+        _box, cx, cy = centre()
+
+    if not (0 < cx < vp["width"] and 0 < cy < vp["height"]):
+        # Genuinely unreachable. Clicking a clamped fallback coordinate is how
+        # the wrong ad gets clicked and reported as this campaign's, so refuse.
         _log(meta, f"click skipped: creative off-screen at ({cx:.0f},{cy:.0f})")
         return
 
@@ -310,6 +333,49 @@ def gam_preview(page, ctx, recorder, settings, meta, target):
     _click_creative(page, ctx, recorder, settings, meta, target.get("expected_id"))
 
 
+def _click_link(page, loc, meta):
+    """Click a link, recovering from an intercepted click.
+
+    Playwright scrolls the target the minimal distance into view, so on a page
+    with a sticky header the link lands right under it and every retry is
+    intercepted until the timeout — measured on wiadomosci.wp.pl, where all
+    eight navigation attempts failed this way and the Commercial Break overlay
+    consequently never appeared. A person would scroll it into open view, so
+    on failure centre it and try again.
+    """
+    try:
+        loc.scroll_into_view_if_needed(timeout=4000)
+    except Exception:
+        pass
+    try:
+        loc.click(timeout=8000)
+        return
+    except Exception:
+        pass
+
+    try:
+        loc.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
+        time.sleep(0.5)
+    except Exception:
+        pass
+    try:
+        loc.click(timeout=8000)
+        _log(meta, "    click landed after centring the link")
+        return
+    except Exception:
+        pass
+
+    # Last resort: a real mouse click at the link's own box. Still a trusted
+    # event, which the overlay requires, but it hits whatever is topmost —
+    # acceptable only because nothing else worked and a failed navigation is
+    # itself reported.
+    box = loc.bounding_box()
+    if not box:
+        raise RuntimeError("link has no box to click")
+    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    _log(meta, "    click landed via mouse at the link's box")
+
+
 def navigation_click(page, ctx, recorder, settings, meta, target):
     """Commercial Break: the overlay only appears on a real in-page navigation.
 
@@ -326,8 +392,23 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
     host = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
 
     try:
+        # Only links a person could actually click. Collecting every a[href]
+        # put the category menu first — spoleczenstwo, sadownictwo, nato — and
+        # those live in a flyout that is hidden until hover, so Playwright
+        # waited for actionability on each in turn and timed out eight times
+        # over without a single navigation. No navigation means no Commercial
+        # Break overlay, which the run then reported as "no tag fired".
         links = page.evaluate(
             """(host) => Array.from(document.querySelectorAll('a[href]'))
+                   .filter(a => {
+                     const r = a.getBoundingClientRect();
+                     if (r.width < 80 || r.height < 20) return false;   // icons, hidden
+                     if (!a.offsetParent) return false;                 // display:none subtree
+                     const st = getComputedStyle(a);
+                     if (st.visibility === 'hidden' || st.pointerEvents === 'none') return false;
+                     // An article headline carries real text; nav items are short.
+                     return (a.innerText || '').trim().length >= 25;
+                   })
                    .map(a => a.href)
                    .filter(h => h.includes(host) && h.length > 25)""",
             host)
@@ -355,12 +436,8 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
         _log(meta, f"[{i}] navigating via link click -> {href[:90]}")
         try:
             loc = page.locator(f'a[href="{href}"]').first
-            try:
-                loc.scroll_into_view_if_needed(timeout=4000)
-            except Exception:
-                pass
             with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
-                loc.click(timeout=8000)     # real click: CB checks isTrusted
+                _click_link(page, loc, meta)   # real click: CB checks isTrusted
         except Exception as e:
             _log(meta, f"    link click failed: {str(e)[:80]}")
             continue
@@ -371,7 +448,12 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
             per_click, settings.get("poll_interval", 0.5))
         if got:
             _log(meta, "    overlay fired")
-            break
+            # Click it now, while it is on screen. A Commercial Break dismisses
+            # itself after a few seconds, so deferring this until the strategy
+            # returns meant the screenshot showed an ordinary article page and
+            # the run reported a click it never had anything to click.
+            _click_creative(page, ctx, recorder, settings, meta, expected)
+            return
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             time.sleep(2)
@@ -379,7 +461,8 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
         except Exception:
             break
 
-    _click_creative(page, ctx, recorder, settings, meta, expected)
+    # No overlay ever appeared. Nothing to click, and saying so is the finding.
+    _log(meta, "no overlay appeared in any navigation")
 
 
 def watch(page, ctx, recorder, settings, meta, target):

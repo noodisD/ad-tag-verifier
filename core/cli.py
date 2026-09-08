@@ -50,6 +50,28 @@ def _load_jobs(args):
     }]
 
 
+def _overrides(args, job):
+    """Per-run settings the profile cannot know: who the campaign belongs to,
+    and therefore whether the vision fallback can be used at all.
+
+    Without an advertiser the model has no way to tell this campaign's
+    creative from the three others on the page, so it is not asked — which is
+    why a CLI run could never attempt the click that the API path could.
+    """
+    advertiser = job.get("advertiser") or getattr(args, "advertiser", None)
+    if not advertiser:
+        return None
+    out = {"advertiser": advertiser}
+    try:
+        from core.ai import creative_click, match as ai_match
+        eye = creative_click.VisionMatcher(ai_match.default_model())
+        if eye.available:
+            out["vision"] = eye
+    except Exception:
+        pass
+    return out
+
+
 def cmd_capture(args):
     from playwright.sync_api import sync_playwright
     from core.capture import session
@@ -75,7 +97,8 @@ def cmd_capture(args):
         for j in jobs:
             vp = j.get("viewport", args.viewport)
             print(f"  {j.get('label', j['id'])[:44]:<45} {profiles.describe(j['url'], vp)}")
-            meta = session.capture(j, browser, run_dir, viewport=vp)
+            meta = session.capture(j, browser, run_dir, viewport=vp,
+                                   overrides=_overrides(args, j))
             fired = [b for b in meta["beacons"] if b["evidence"] == "fired"]
             print(f"      {len(fired)} beacons fired in {meta['duration_s']}s"
                   f"{'  ERROR: ' + meta['error'] if meta['error'] else ''}")
@@ -127,6 +150,8 @@ def main(argv=None):
     p.add_argument("--headless", action="store_true", default=True)
     p.add_argument("--headed", dest="headless", action="store_false")
     p.add_argument("--no-click", action="store_true")
+    p.add_argument("--advertiser",
+                   help="who the campaign belongs to; enables the vision click fallback")
     p.set_defaults(func=cmd_capture)
 
     p = sub.add_parser("analyze", help="re-read artifacts, no browser")

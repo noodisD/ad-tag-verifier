@@ -128,6 +128,22 @@ profiles:
     watch_timeout: 180
     notes: "large WP formats have no clickable frame; vision fallback tries, watch is the backstop"
 
+  - name: onet
+    match: ["onet.pl"]
+    # Heavy portal stack; the default 45s is not enough to tell "no tag" from
+    # "not yet".
+    patience: 90
+    scroll_passes: 8
+
+  - name: rasp-adbeta
+    match: ["adbeta="]
+    # RASP's own preview mechanism (businessinsider.com.pl, kultura.onet.pl).
+    # The slot is named in the URL fragment and the page reads it at load, so
+    # it has to be present on the first navigation — arriving at the same URL
+    # and only changing the hash does not reload the page, and the slot then
+    # never initialises.
+    patience: 90
+
   - name: commercial-break
     match: ["Baner_Commercial_Break", "commercialFull", "CommercialBreakMobile"]
     # The overlay only appears on a real in-page navigation. page.goto() never

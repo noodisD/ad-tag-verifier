@@ -10,6 +10,11 @@ properties (Gazeta.pl, Agora, Interia, WP, Eska, Mamadu, NTO, ZPR, RASP,
 PushAd and others) on behalf of advertisers spanning retail, banking and fuel
 retail — referred to below by sector rather than name.
 
+Those scripts are kept as history. The working tool is now `core/`, which
+distils them into two halves that never touch each other: a browser that
+gathers evidence and decides nothing, and an analyzer that reads that evidence
+and never opens a browser. `frontend/` and `backend/` drive it.
+
 ## What it does
 
 Each script loads a live campaign preview URL in a real browser (Playwright),
@@ -79,7 +84,10 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-## Running a script
+## Running one of the historical scripts
+
+The scripts in `scripts/` still run, and are the record of how this grew.
+New work goes through `core/`.
 
 ```bash
 python scripts/verify_gazeta_final.py
@@ -97,94 +105,167 @@ is a placeholder; point it at your own exported `.xlsx`/`.xls`.
 ## Layout
 
 ```
-scripts/
-  verify_*.py       per-publisher / per-campaign verification runs
-  check_*.py        one-off checks (ad dimensions, click counts)
-  diag_*.py         diagnostic scripts — dump every request matching a pattern
-  read_*.py         tag readers — extract IDs from a live page or tag snippet
-  retest_*.py       targeted re-runs against previously failed placements
-  monitor_pudelek.py
-  test_click_dv360.py
-frontend/
-  index.html        extraction UI + scan/select/match flow, self-contained
+core/                 the engine
+  profiles.yaml       per-site behaviour — adding a publisher is an entry, not code
+  profiles.py         resolves a URL to merged settings
+  capture/            one session -> one artifact (run.har + meta.json + screenshot)
+    strategies.py     load / gam_preview / navigation_click / watch
+    consent.py        getting past the consent wall
+  analyze/            artifact -> verdict. No browser.
+    vendors.py        what each vendor's beacons look like, split impression/click
+  ai/                 the two places a model earns its keep (see below)
+  report/html.py      one self-contained file, screenshots embedded
+  tests/              fast, browser-free
+  artifacts/          run output — gitignored, carries real campaign data
 backend/
-  app.py            Flask API: /discover (scan pages), /verify (self-check)
-  verifier.py       the Playwright scan + check, generalized from scripts/
+  app.py              Flask API: /discover, /verify, /match, /watch/<id>/done
+  engine.py           bridge from the HTTP shape to core/
+  verifier.py         the original scan, superseded by core/ and kept for reference
+frontend/
+  index.html          single self-contained page, no build step
+scripts/              126 -> 72 one-off runs, the honest record of how this grew
 ```
 
-## Frontend — Tag ID Extractor
+## The engine — capture, then analyze
 
-`frontend/index.html` is a single self-contained page (no build step, no
-server) for the step that happens before any of the scripts above run:
-pulling the platform and ID out of a tag someone pasted from an email, or out
-of a trafficking-sheet export.
+The browser produces evidence and decides nothing. Verdicts come from reading
+that evidence afterwards, which buys three things the per-script approach
+could not have:
 
-Open it directly in a browser — `frontend/index.html`, no server needed. Two
-input modes:
+- **A wrong detection rule costs one re-read, not a re-run.** Working out that
+  `securepubads.g.doubleclick.net` is Ad Manager's own infrastructure rather
+  than a CM360 beacon used to mean re-driving every page. Capture takes ~30-150s
+  on a live publisher page; re-analysing the stored artifact takes under a
+  second.
+- **Evidence survives the run.** A verdict printed to stdout is not something
+  you can send a publisher who disagrees. Every run leaves a HAR they can open
+  in their own devtools.
+- **Regression tests exist.** There is no way to test against a live page.
+  There is one against a stored HAR, and `core/tests/` pins every
+  classification rule that has been got wrong.
 
-- **Paste raw text** — drop in an email body, a Slack message, whatever.
-  Every URL in the text is scanned; prose and broken line-wraps around it are
-  ignored.
-- **Upload a trafficking sheet** (`.xlsx`/`.xls`, parsed client-side via
-  [SheetJS](https://sheetjs.com)) — every cell on every sheet is scanned, and
-  each match reports back the sheet and cell it came from (e.g. `Sheet1!C14`),
-  the same way the `read_*_tags.py` scripts do it with pandas.
+`profiles.yaml` holds the per-site knowledge that used to be spread across
+`scripts/`. Two kinds of entry, merged in file order:
 
-Recognizes the same three platforms the scripts verify — Adform (`bn=`),
-CM360 (`dc_trk_aid`, `dc_trk_cid`, the `N…/B…` site/placement pair), and
-Google Ad Manager preview URLs (`iu`, `lineItemId`, `creativeId`,
-`gdfp_req`) — and turns the results into a `URLS = [...]` list in the exact
-tuple shape every `verify_*.py` script already expects, one click away on the
-clipboard. Nothing is uploaded anywhere; parsing runs entirely in the
-browser tab.
+- **How long a publisher's stack really takes.** dziennik.pl serves its
+  impression at 96.9s; a 60s budget reports "no tags" on a page that is fine.
+- **How the page has to be driven.** A GAM preview needs two loads — the first
+  only sets the cookie. WP's Commercial Break overlay appears only on a real
+  in-page navigation, so the run clicks an article link. RASP's `#adbeta=`
+  names the slot in the URL fragment and reads it at load, so it must be
+  present on the first navigation.
 
-**A trafficking sheet and a pasted email combine, they don't replace each
-other.** Upload the sheet, then paste the email (or the other order) — both
-actions add to the same session. They're two different things: the sheet is
-what a tag *should* be, and the email is a list of pages where it should
-have been implemented. Those pages are usually bare preview links with no
-tag ID of their own (`.../120x600_faul/`, or a publisher URL carrying the
-creative name in a query param), so the extractor recognizes that shape too
-and parses `{size, variant}` out of it.
+Every vendor is split by impression and click. Matching `doubleclick.net/ddm/track`
+as one bucket cannot answer the question the tool exists for — *does the click
+track too?*
 
-## Backend — scanning live pages
+### watch — where automation is not trusted
 
-Extraction never needs a server. Checking whether a tag is *actually
-implemented* does: that means opening the page in a real browser, getting
-past the consent wall, and watching what fires. `backend/` is a small Flask
-API for that, and the frontend drives it in three steps:
+On pages carrying several same-size slots, automated clicking repeatedly
+clicked *other advertisers'* creatives and reported them as the campaign's.
+Four successive targeting methods — by size, by frame content, by the frame
+that fired the impression, and clicking within a second of it — all failed the
+same way, because the slot can refresh between the impression and the click.
 
-**1 · Scan test pages.** Every test URL is opened for real and every ad tag
-that fires is recorded — Adform, CM360, ABT Shield, DoubleVerify. Nothing is
-compared at this stage and no expected value is sent; the page is simply the
-source of truth for what is there. One scan per test URL, so the run is
-bounded by how many tests you pasted, not by how many rows the sheet has.
+So `watch` hands the browser to a person: they click, the tool records. It is
+a deliberate limit, not a gap. A person clicks correctly in seconds; capturing
+the evidence is the part worth automating.
 
-**2 · Pick which tags matter.** The vendors actually seen across the scanned
-pages become the filter — Adform and CM360 are the serving tags and are
-selected by default; ABT Shield and DoubleVerify ride alongside as
-measurement vendors and are opt-in, since not every campaign carries them.
+## The AI layer
 
-**3 · Match against the sheet.** Only now is the trafficking sheet consulted:
-each discovered ID is looked up in it. A selected vendor that never fired is
-flagged `missing`; an ID that fired but isn't in the sheet is `not in sheet`;
-and an ID that *is* in the sheet but under a row naming a different creative
-is called out explicitly — that's the right slot running the wrong tag, which
-is the failure this is really for.
+Narrow by design, and confined to two jobs. **Neither decides whether a tag
+fired** — that stays a deterministic match over the HAR, because a verdict has
+to be evidence you can send a publisher.
 
-Because discovery runs before any comparison, the tool reports what the page
-does even with no sheet uploaded at all — the sheet only changes the verdict,
-not the finding.
+- **`core/ai/match.py`** pairs the test URLs named in an email with the rows of
+  a trafficking sheet. Name scoring settles the clear cases outright and the
+  model is not consulted at all; only what scoring cannot settle is put to it,
+  as a ranked shortlist, and it may decline. A size conflict is never reported
+  as resolved whatever the confidence says — that is the shape of the stale-export
+  failure, where the same tag ID was described as one format in a morning
+  export and another in the afternoon's.
+- **`core/ai/creative_click.py`** is a fallback for clicking. Deterministic
+  targeting is always tried first and is exact when it works; it finds nothing
+  on screenings and wallpapers, where the run would otherwise log "click
+  skipped" and the placement would look click-less although nothing had been
+  attempted. The model points at the creative on a screenshot, and the click
+  counts **only if the beacon that follows carries the expected ID**. A click
+  landing on a competitor's creative produces somebody else's beacon and is
+  recorded as exactly that — a wrong guess is discarded, not reported.
+
+Credentials come from the environment: `GEMINI_API_KEY` for AI Studio, or
+`GOOGLE_APPLICATION_CREDENTIALS` for Vertex AI. With neither set the fallback
+is simply absent and more rows are left for a person.
+
+## Frontend
+
+`frontend/index.html` is a single self-contained page — no build step. Open it
+directly, or serve the folder over HTTP if a corporate proxy blocks the
+SheetJS CDN (the page says so rather than failing silently).
+
+The flow follows what actually arrives in the inbox:
+
+**Read the email.** Publishers and creative agencies send a creative name and,
+on the line below it, a link — a DV360 preview, a WP `wfName=` page, a RASP
+`#adbeta=` slot. The name is carried onto the link, so twenty-two rows do not
+all read "preview". Formats are read wherever they are stated: `flexWidth`/
+`flexHeight` on DV360 links, `970_300` where WP writes it with an underscore.
+
+**Upload the trafficking sheet.** A sheet states what is *booked*; the email
+says where to look. They combine into one session, in either order, and only
+the email contributes pages to scan — a sheet's click-through column is the
+advertiser's landing page, not a test.
+
+**1 · Scan.** Every test URL is opened for real and every tag that fires is
+recorded. Nothing is compared yet.
+
+**2 · Which tags to check.** The vendors actually seen become the filter.
+Adform and CM360 are the serving tags; ABT Shield and DoubleVerify ride
+alongside as measurement and are opt-in.
+
+**3 · Match.** Each discovered ID is looked up in the sheet. The ID is the
+identity — sizes and creative names are never used to decide *which* tag
+something is. What is checked, when both sides state it, is whether the format
+the email gave a creative agrees with the format the sheet books that ID under.
+
+Impression and click are reported separately, and "not tested" is distinct
+from "did not fire": a click the run never managed to attempt says nothing
+about the tag, and reporting it as missing raises a defect against a placement
+that may be correct.
+
+## Backend
 
 ```bash
-cd backend
-pip install -r requirements.txt
-playwright install chromium
-python app.py                    # http://localhost:8877
+cd backend && python app.py          # http://localhost:8877
 ```
 
-Then open `frontend/index.html` as before — the backend status dot in the
-header switches from "not running" to "ready" once it detects the API, and
-the Verify button lights up. Full detail, including why only Adform/CM360
-rows are checkable and how the check avoids trivially confirming its own
-input, is in `backend/README.md`.
+Then open the frontend. The status dot in the header goes green once it sees
+the API; click it to re-check if you started the backend afterwards.
+
+Endpoints: `/discover` (scan pages), `/verify` (check against expected IDs),
+`/match` (pair email to sheet), `/watch/<run_id>/done` (the operator says they
+have finished clicking in watch mode). Runs are backgrounded and polled; a run
+that cannot start — usually because `playwright install chromium` was never
+run — reports that rather than finishing quietly with every row pending.
+
+## The CLI
+
+Everything the API does is also a command, and the analyzer runs without a
+browser at all:
+
+```bash
+python -m core.cli profile "<url>"                 # how would this be driven?
+python -m core.cli capture --jobs jobs.json --advertiser "SomeBrand"
+python -m core.cli analyze core/artifacts/<run>    # re-read, no browser
+python -m core.cli report  core/artifacts/<run>
+python -m pytest core/tests backend/tests -q
+```
+
+`profile` opens no browser — it is the cheapest way to confirm a new
+`profiles.yaml` entry does what you meant.
+
+## Artifacts are not committed
+
+A run artifact carries real campaign IDs and publisher URLs. HARs are recorded
+in `minimal` mode, which omits response bodies and cookies, but they are still
+campaign data — `core/artifacts/` is gitignored, as is `.env`.
