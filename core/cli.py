@@ -74,7 +74,7 @@ def _overrides(args, job):
 
 def cmd_capture(args):
     from playwright.sync_api import sync_playwright
-    from core.capture import session
+    from core.capture import session, strategies
 
     jobs = _load_jobs(args)
     if not jobs:

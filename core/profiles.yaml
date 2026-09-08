@@ -79,7 +79,12 @@ profiles:
   # ── URL shapes: how the page has to be driven ─────────────────────────
 
   - name: gam-preview
-    match: ["google_preview=", "live_preview_config"]
+    # `google_preview%3D` matters: on a video preview the parameter arrives
+    # url-encoded inside the `redirect=` of the preview_cookie handshake, so
+    # matching only the decoded form missed every TVP link and ran it as a
+    # plain load. `preview_cookie` catches the handshake itself.
+    match: ["google_preview=", "google_preview%3D", "gampad/preview_cookie",
+            "live_preview_config"]
     # The first load only sets the preview cookie; the creative renders on the
     # second. Loading once and reporting "none" is a false negative, not a
     # finding.
@@ -157,3 +162,23 @@ profiles:
     strategy: navigation_click
     patience: 90
     max_link_clicks: 8
+
+  # ── instream ──────────────────────────────────────────────────────────
+
+  - name: video-vod
+    match: ["vod.tvp.pl", "player.pl", "tvn.adocean.pl", "/serving/videoad/",
+            "vod.pl", "ipla.tv", "polsatboxgo.pl"]
+    # Instream serves nothing until the player starts, and then only for as
+    # long as the spot runs. Measured on a TVN pre-roll: consent at 5s, VAST
+    # at 33.1s, impression at 33.3s, quartiles out to 64s. On vod.tvp.pl the
+    # same page requested its pre-roll at 30.7s with the window fronted and
+    # at 232.5s without, so the budget has to cover a player that is simply
+    # slow to boot as well as one that is broken.
+    strategy: video
+    patience: 180
+    # How long to let the page start on its own before pressing anything.
+    # TVN's test page autoplays; clicking there navigated off the page a
+    # second after the VAST request and lost the run.
+    play_wait: 15
+    scroll_passes: 0
+    notes: "pre-roll: press play only if autoplay does not start it, then click the spot"

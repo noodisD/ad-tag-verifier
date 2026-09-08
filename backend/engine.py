@@ -76,6 +76,12 @@ def _click_attempted(meta):
     # overlay first and only then falls through to a path that logs a skip;
     # reading the skip and ignoring the attempt reported a click that did
     # happen — and landed — as never tested.
+    # A click the ad never received is not an attempt in the sense that
+    # matters here: the question is whether the tag was tested, and it was
+    # not. Some players take the click as play/pause and the SDK never sees
+    # it — reporting that as "clicked, nothing tracked" accuses the tag.
+    if meta.get("click_result") == "not_testable":
+        return False
     if any(m in e for e in events
            for m in ("click element at", "overlay click at", "model click at")):
         return True

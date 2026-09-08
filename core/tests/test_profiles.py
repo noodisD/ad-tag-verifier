@@ -102,3 +102,36 @@ def test_an_ordinary_wp_article_is_still_automated():
     every WP page into a mode that needs a human."""
     s = profiles.resolve("https://wiadomosci.wp.pl/artykul/cos")
     assert s["strategy"] == "load"
+
+
+# ── instream ─────────────────────────────────────────────────────────────
+
+def test_gam_video_preview_matches_url_encoded_parameter():
+    """A video preview carries `google_preview` inside `redirect=`, encoded.
+
+    Matching only the decoded `google_preview=` missed every TVP link, which
+    then ran as a plain load: no play, no pre-roll, "no tags fired".
+    """
+    s = profiles.resolve(
+        "https://pubads.g.doubleclick.net/gampad/preview_cookie?op=set"
+        "&redirect=https://vod.tvp.pl/seriale,18/x?google_preview%3DABC"
+        "&lineItemId=7409881638")
+    assert "gam-preview" in s["profiles_applied"]
+
+
+def test_vod_pages_use_the_video_strategy():
+    for url in ("https://vod.tvp.pl/seriale,18/pan-mama-odcinki,1907785/odcinek-58",
+                "https://tvn.adocean.pl/readredir/id=T6xW/forcecookie=1/url=AQAA"):
+        s = profiles.resolve(url)
+        assert s["strategy"] == "video", url
+        # Measured: consent at 5s, VAST at 33s, quartiles out to 64s, and a
+        # player that boots in 30s or in 232s depending on whether anyone is
+        # looking at the tab.
+        assert s["patience"] >= 180, url
+
+
+def test_video_needs_a_window():
+    """bring_to_front is meaningless headless, and that is where the
+    measurement came from."""
+    from core.capture import strategies
+    assert "video" in strategies.NEEDS_WINDOW

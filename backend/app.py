@@ -42,6 +42,7 @@ import engine                                    # noqa: E402
 from core.ai import match as ai_match           # noqa: E402
 from core import profiles as core_profiles       # noqa: E402
 from core.capture import session as core_session  # noqa: E402
+from core.capture import strategies as core_strategies  # noqa: E402
 
 app = Flask(__name__)
 
@@ -217,6 +218,11 @@ def _start(kind, need_platform, work):
     # makes the whole run headed; mixing modes in a single Playwright launch
     # is not possible, and a visible window costs the other targets nothing.
     watch_ids = [t["id"] for t in accepted if _strategy_for(t) == "watch"]
+    # Video needs a window for a different reason than watch does: nobody is
+    # clicking in it, but a player whose tab Chrome treats as occluded defers
+    # its pre-roll — measured at 30.7s fronted against 232.5s not.
+    windowed = watch_ids + [t["id"] for t in accepted
+                            if _strategy_for(t) in core_strategies.NEEDS_WINDOW]
     done = threading.Event()
     for t in accepted:
         t["overrides"] = {"announce": False}
@@ -230,7 +236,7 @@ def _start(kind, need_platform, work):
             RUNS[run_id]["done_event"] = done
 
     threading.Thread(target=_run_worker,
-                     args=(run_id, accepted, work, run_dir, not watch_ids),
+                     args=(run_id, accepted, work, run_dir, not windowed),
                      daemon=True).start()
     return jsonify({"run_id": run_id, "rejected": rejected,
                     "artifacts": str(run_dir), "watch_ids": watch_ids})

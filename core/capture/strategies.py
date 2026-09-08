@@ -659,9 +659,250 @@ def watch(page, ctx, recorder, settings, meta, target):
         _log(meta, "watch ended by user")
 
 
+# ── instream video ────────────────────────────────────────────────────────
+
+# Play controls, by the words publishers put on them. Deliberately short: a
+# broadcaster's own navigation is full of the same words ("Oglądaj" is a
+# top-level menu item on tvn24.pl), so the label alone is not enough and the
+# candidate also has to sit near the player — see _play_control.
+PLAY_LABELS = ("odtwórz", "oglądaj", "obejrzyj", "włącz", "play", "wznów")
+
+_PLAYER_BOX = """() => {
+    // The biggest <video> on the page, or failing that the biggest element
+    // calling itself a player. Viewport coordinates.
+    const boxes = [];
+    for (const v of document.querySelectorAll('video, [class*=player], [id*=player]')) {
+        const r = v.getBoundingClientRect();
+        if (r.width > 200 && r.height > 120) boxes.push({
+            x: r.x + r.width / 2, y: r.y + r.height / 2,
+            w: r.width, h: r.height, top: r.y, area: r.width * r.height,
+            // A <video> that is actually running is the spot; a paused one or
+            // a wrapper div is scenery. Clicking scenery is how a run reports
+            // "no click beacon" having never touched the ad.
+            playing: (v.tagName === 'VIDEO' && !v.paused && v.currentTime > 0) ? 1 : 0,
+            video: v.tagName === 'VIDEO' ? 1 : 0});
+    }
+    if (!boxes.length) return null;
+    boxes.sort((a, b) => (b.playing - a.playing) || (b.video - a.video) || (b.area - a.area));
+    return boxes[0];
+}"""
+
+_PLAY_CANDIDATES = r"""(labels) => {
+    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const out = [];
+    for (const e of document.querySelectorAll('button, a, [role=button], [class*=play]')) {
+        const shown = norm(e.innerText);
+        const t = shown || norm(e.getAttribute('aria-label'));
+        if (!t || t.length > 24) continue;
+        if (!labels.some(l => t === l || t.startsWith(l))) continue;
+        if (e.closest('nav, header, [class*=nav], [class*=menu]')) continue;
+        const r = e.getBoundingClientRect();
+        if (r.width < 20 || r.height < 12) continue;
+        out.push({x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
+                  // Does the button say what it does, or is it an icon with a
+                  // label only a screen reader sees? On vod.tvp.pl the icon in
+                  // the hero trailer's control bar sits nearer the player than
+                  // the page's actual "ODTWÓRZ" button, and picking by
+                  // distance alone pressed the wrong one and played nothing.
+                  labelled: shown ? 1 : 0, area: r.width * r.height,
+                  label: t.slice(0, 24)});
+    }
+    return out;
+}"""
+
+# Is a spot on screen right now? The IMA SDK puts its own container over the
+# player while an ad runs and takes it away afterwards.
+_AD_PLAYING = """() => {
+    for (const sel of ['.ima-ad-container', '[id*=ima-ad]', '[class*=ad-container]',
+                       '[class*=adContainer]', '[class*=videoAdUi]']) {
+        for (const e of document.querySelectorAll(sel)) {
+            const r = e.getBoundingClientRect();
+            if (r.width > 200 && r.height > 120) return true;
+        }
+    }
+    return false;
+}"""
+
+
+def _keep_active(page):
+    """Keep the tab fronted and the page looking interacted-with.
+
+    Measured on vod.tvp.pl: the same run requested its pre-roll at 30.7s with
+    the window fronted and at 232.5s without — the player defers while Chrome
+    treats the tab as occluded. A 90s budget therefore reported "no tags" on
+    a page whose only problem was that nobody was looking at it.
+    """
+    try:
+        page.bring_to_front()
+        page.mouse.move(700, 450)
+    except Exception:
+        pass
+
+
+def _play_control(page, meta):
+    """The play button, if this player needs one pressed. -> (x, y) or None."""
+    try:
+        box = page.evaluate(_PLAYER_BOX)
+        cands = page.evaluate(_PLAY_CANDIDATES, list(PLAY_LABELS))
+    except Exception:
+        return None
+    if not cands:
+        return None
+    if box:
+        # Near the player, or not at all. The alternative is clicking the
+        # site's own "Oglądaj" menu item and navigating off the test page —
+        # which is how one run lost its pre-roll a second after requesting it.
+        cands = [c for c in cands if abs(c["y"] - box["y"]) < box["h"] + 400]
+        if not cands:
+            return None
+        cands.sort(key=lambda c: (-c.get("labelled", 0), -c.get("area", 0),
+                                  (c["x"] - box["x"]) ** 2 + (c["y"] - box["y"]) ** 2))
+    c = cands[0]
+    _log(meta, f"play control '{c['label']}' at ({c['x']},{c['y']})")
+    return c["x"], c["y"]
+
+
+def _serving_impressions(recorder):
+    return {b["id"] for b in recorder.beacons
+            if b.get("kind") == vendors.IMPRESSION
+            and b.get("evidence") == "fired"
+            and b.get("vendor") in vendors.SERVING_VENDORS and b.get("id")}
+
+
+def _await_video(page, recorder, expected_id, budget):
+    """Wait for a spot to start, keeping the tab alive. -> what started.
+
+    Returns "expected", "other" or None. Stopping on *any* serving impression
+    rather than only the expected one matters more than it looks: instream is
+    routinely trafficked as two spots in rotation, and waiting out the full
+    budget for the 30s creative while the 15s one played and finished left
+    the click landing on an empty player 160s later.
+    """
+    deadline = time.time() + budget
+    while True:
+        served = _serving_impressions(recorder)
+        if expected_id and expected_id in served:
+            return "expected"
+        if served:
+            return "other"
+        if time.time() >= deadline:
+            return None
+        _keep_active(page)
+        time.sleep(1.0)
+
+
+def video(page, ctx, recorder, settings, meta, target):
+    """Instream pre-roll: start the player, then click the spot itself.
+
+    Two things make this unlike every display strategy. Nothing serves until
+    playback begins, so the run may have to press play; and the click target
+    is the spot on screen rather than a creative iframe — the IMA SDK lays a
+    clickthrough layer over the video, and a real click on it opens the
+    advertiser's page in a new tab, which is what fires
+    `track.adform.net/C/?bn=`.
+    """
+    expected_id = target.get("expected_id")
+    page.goto(target["url"], wait_until="load", timeout=60000)
+    _keep_active(page)
+    meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
+    if consent.still_up(page):
+        # Worth saying plainly: a page behind the wall serves nothing at all,
+        # so every verdict that followed would really be about the wall.
+        _log(meta, "consent wall still up after accept — nothing will serve")
+    _keep_active(page)
+
+    # Give autoplay its chance first. TVN's test page starts the pre-roll on
+    # its own, and there pressing play is not merely unnecessary — it is how
+    # the run navigates away from the page it is meant to be testing.
+    grace = min(settings.get("play_wait", 12), settings["patience"])
+    started = _await_video(page, recorder, expected_id, grace)
+    if started is None and settings.get("play", "auto") != "none":
+        spot = _play_control(page, meta)
+        if spot:
+            try:
+                page.mouse.click(*spot)
+            except Exception as e:
+                _log(meta, f"play click failed: {type(e).__name__}")
+        else:
+            _log(meta, "no play control found; waiting for autoplay")
+        started = _await_video(page, recorder, expected_id,
+                               max(settings["patience"] - grace, 10))
+
+    _log(meta, f"video impression {'seen' if started else 'NOT seen'} "
+               f"within {settings['patience']}s")
+    if started is None:
+        return
+    # Whose click we are about to test. Normally the campaign's own creative;
+    # when a different one played it is that one, and saying so is the whole
+    # point — judging the click against an id that never appeared reported a
+    # click that landed perfectly on `?bn=90116854` as "the slot is carrying
+    # another advertiser", which is not what a rotation partner is.
+    click_target = expected_id
+    if started == "other":
+        other = sorted(_serving_impressions(recorder) - {expected_id})
+        click_target = other[0] if len(other) == 1 else None
+        _log(meta, "expected creative did not play; a different one did "
+                   f"({', '.join(other[:3]) or 'unidentified'}) — clicking it "
+                   "so the click is still tested")
+        meta["click_target_id"] = click_target
+
+    if not settings.get("click", True):
+        _log(meta, "click skipped by profile")
+        return
+
+    # The spot is on screen now and will not be for long — a 15s pre-roll is
+    # gone in 15 seconds — so the click goes in here rather than after the
+    # usual settling.
+    try:
+        box = page.evaluate(_PLAYER_BOX)
+    except Exception:
+        box = None
+    if not box:
+        _log(meta, "click skipped: no player on screen to click")
+        return
+    try:
+        playing = page.evaluate(_AD_PLAYING)
+    except Exception:
+        playing = False
+    _log(meta, "ad container visible" if playing
+         else "no ad container found; clicking the player anyway")
+    # An index into the recorder, not a timestamp: click_confirmed slices the
+    # beacon list with it.
+    since = len(recorder.beacons)
+    # Above the control bar — the middle of the bottom strip is the pause
+    # button, and hitting it stops the spot without testing anything — and
+    # inside the window, since a player taller than the viewport would
+    # otherwise put the click off-screen.
+    vp = settings["viewport"]
+    cx = min(max(box["x"], 5), vp["width"] - 5)
+    cy = min(max(box["top"] + box["h"] * 0.4, 5), vp["height"] - 80)
+    _clicked_at(page, ctx, recorder, settings, meta, click_target,
+                cx, cy, since, "video")
+    if started == "other" and meta.get("click_result") == "confirmed":
+        _log(meta, f"note: that click belongs to {click_target}, the creative "
+                   f"that played — not to {expected_id}, which never served")
+
+    # Neither a beacon nor a clickthrough tab. A spot with no click tracker
+    # would still have opened the advertiser's page, so this is not evidence
+    # of a missing tag — it means the click never reached the ad. Measured on
+    # vod.tvp.pl, whose player takes the click as play/pause and logs
+    # `video_player_off` while the IMA SDK never sees it. Saying "no click"
+    # here would raise a defect against a tag nobody has tested.
+    if meta.get("click_result") == "none" and not meta.get("landing"):
+        meta["click_result"] = "not_testable"
+        _log(meta, "the player consumed the click instead of the ad — the "
+                   "click cannot be tested automatically on this one; use watch")
+
+
+# Strategies that cannot run in a headless browser. "watch" hands the window
+# to a person, and "video" fronts the tab on purpose: a player whose tab
+# Chrome considers occluded defers its pre-roll for minutes.
+NEEDS_WINDOW = {"watch", "video"}
+
 _STRATEGIES = {
     "load": load,
     "gam_preview": gam_preview,
     "navigation_click": navigation_click,
     "watch": watch,
+    "video": video,
 }

@@ -54,3 +54,14 @@ def test_every_core_verdict_maps_to_a_status_the_ui_can_paint():
 def test_every_vendor_has_an_id_label_for_the_discover_payload():
     for v in vendors.VENDORS:
         assert engine.ID_LABEL.get(v.name), f"no id label for {v.name}"
+
+
+def test_a_click_the_player_swallowed_is_not_an_attempt():
+    """vod.tvp.pl takes the click as play/pause and the IMA SDK never sees
+    it. A spot with no click tracker would still have opened the advertiser's
+    page, so this says nothing about the tag — and reporting it as "clicked,
+    nothing tracked" raises a defect against a tag nobody tested."""
+    meta = {"events": ["video click at (692,389)",
+                       "clicked (video) but no click beacon followed"],
+            "click_result": "not_testable"}
+    assert engine._click_attempted(meta) is False
