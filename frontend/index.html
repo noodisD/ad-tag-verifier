@@ -619,7 +619,12 @@ const FIXED_ID_VENDORS = ["ABT Shield"];
 // Which discovered field carries the identity worth matching per vendor.
 const MATCH_FIELDS = {
   "Adform": ["bn"],
-  "CM360": ["dc_trk_aid", "dc_trk_cid"],
+  // `placement` first, and it has to be here at all: the backend identifies a
+  // CM360 beacon by the number after `B…` — the Placement ID — while the sheet
+  // side was only ever indexed by dc_trk_aid. Those are different numbers, so
+  // nothing the page found could ever meet anything the sheet held, and two
+  // placements that fired perfectly came back Unassigned with no ID shown.
+  "CM360": ["placement", "dc_trk_aid", "dc_trk_cid"],
   "ABT Shield": ["o"],
   "DoubleVerify": ["plc"],
 };
@@ -644,6 +649,11 @@ function fieldsOf(u, platform) {
     const aid = param(u, "dc_trk_aid");
     const cid = param(u, "dc_trk_cid");
     const pair = u.match(/ddm\/track(?:imp|clk)\/(N[\d.]+)\/(B[\d.]+)/i);
+    // The placement id, read the same way the backend reads it off the live
+    // page: the number after `B36716444.`. This is what the two sides are
+    // matched on, so it must come out of the sheet's tag identically.
+    const placement = u.match(/ddm\/track(?:imp|clk)\/[^/]+\/B\d+\.(\d+)/i);
+    if (placement) out.push(["placement", "placement id", placement[1]]);
     if (aid) out.push(["dc_trk_aid", "dc_trk_aid", aid]);
     if (cid) out.push(["dc_trk_cid", "dc_trk_cid", cid]);
     if (pair) out.push(["np", "site/placement", pair[1] + "/" + pair[2]]);
@@ -757,15 +767,38 @@ function targetLabel(t) {
 // name-like cell together, so the sheet column read
 // "WP.pl Wp_direct_970x300-MegaDoubleBillboard_FIX_PCC_Bkm-wiz" — the media
 // name repeated in front of the only part anyone needs.
-function lineItemName(cells) {
-  const named = (cells || []).map(c => String(c).trim())
+function lineItemName(cells, repeated) {
+  let named = (cells || []).map(c => String(c).trim())
     .filter(c => c && !/https?:\/\//i.test(c) && !/[<>]/.test(c));
+  // Drop anything that appears on other rows too. A CM360 export repeats the
+  // campaign name on every row, and it is usually the longest name-like cell
+  // there — so "longest wins" labelled two different placements with the one
+  // string that cannot tell them apart, while
+  // `i22280n8_TVP_A25-44_15s-Instream_CPM_PCC_umbrella15_1` sat in the next
+  // column. What names a row is what only that row says.
+  if (repeated && repeated.size) {
+    const unique = named.filter(c => !repeated.has(c));
+    if (unique.length) named = unique;
+  }
   // A line item name carries the format and the underscore-joined shape the
   // trafficking convention uses; prefer that over a bare publisher cell.
   const shaped = named.filter(c => /\d{2,4}\s*[x_-]\s*\d{2,4}/.test(c) && /[_-]/.test(c));
   const pick = (shaped.length ? shaped : named)
     .sort((a, b) => b.length - a.length)[0];
   return pick ? pick.replace(/\s+/g, " ").slice(0, 120) : null;
+}
+
+// Cell values that show up on more than one row of the same upload.
+function repeatedCells(units) {
+  const seen = new Map();
+  (units || []).forEach(u => {
+    new Set((u.cells || []).map(c => String(c).trim())).forEach(c => {
+      if (c.length > 3) seen.set(c, (seen.get(c) || 0) + 1);
+    });
+  });
+  const out = new Set();
+  seen.forEach((n, c) => { if (n > 1) out.add(c); });
+  return out;
 }
 
 function parseSizeVariant(s) {
@@ -848,6 +881,7 @@ function fetchWithTimeout(url, opts, ms) {
 function extract(units, sourceLine) {
   let addedTags = 0, addedTargets = 0;
   const counters = {};
+  const repeated = repeatedCells(units);
 
   units.forEach(unit => {
     const cells = unit.cells || [unit.text || ""];
@@ -943,7 +977,8 @@ function extract(units, sourceLine) {
         // The row's own wording. parseSizeVariant() reduces it to a size and a
         // variant, which is all the vendor match needs — but pairing against an
         // email works on the words themselves, so keep them.
-        rowName: lineItemName(cells) || nameSource.replace(/\s+/g, " ").trim().slice(0, 200)
+        rowName: lineItemName(cells, repeated)
+                 || nameSource.replace(/\s+/g, " ").trim().slice(0, 200)
       });
       addedTags++;
 
@@ -1764,8 +1799,18 @@ function renderMatch() {
         });
       }).flat();
       const bad = checks.some(c => c.cls === "bad");
-      const pill = !haveSheet ? "running" : bad ? "fail" : "pass";
-      const pillText = !haveSheet ? "found" : bad ? "mismatch" : "matches sheet";
+      // Nothing checked is not a pass. When the vendor's identifying field is
+      // not among what the page reported, `checks` comes out empty and this
+      // used to paint "matches sheet" over an empty ID column — a verdict
+      // asserted from no evidence at all, which is the one thing this table
+      // must never do.
+      const nothingChecked = checks.length === 0;
+      const pill = !haveSheet ? "running" : bad ? "fail" : nothingChecked ? "warn" : "pass";
+      const pillText = !haveSheet ? "found"
+        : bad ? "mismatch"
+        : nothingChecked ? "nothing to compare — no " + (MATCH_FIELDS[vendor] || []).join("/")
+                           + " in what fired"
+        : "matches sheet";
 
       // What the sheet calls the IDs found here, so the verdict can be read
       // against the mail rather than taken on trust.
