@@ -13,6 +13,7 @@ devtools, including the publisher's.
 
 import json
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -209,16 +210,48 @@ def capture(target, browser, out_root, viewport="desktop", overrides=None):
         meta["consent"] = meta.get("consent")
         meta["duration_s"] = round(time.time() - recorder.t0, 1)
         meta["beacons"] = recorder.beacons
-        try:
-            ctx.close()            # flushes the HAR
-        except Exception:
-            pass
+        meta["har_flush"] = _close_context(ctx)
 
     meta["har"] = "run.har"
     with open(run_dir / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
     return meta
+
+
+def _close_context(ctx, timeout=45):
+    """Close the context — which is what writes the HAR — without letting it
+    hang the run.
+
+    Measured on an OLX listing page: `ctx.close()` sat for over twenty
+    minutes and the run never reached its second target, because the page
+    keeps a long-lived connection open and the HAR will not finalise while
+    requests are still in flight. Blanking every page first ends that
+    traffic; the timeout is there for the case where something still refuses,
+    and losing one HAR is a far smaller loss than losing every target queued
+    behind it.
+    """
+    for page in list(getattr(ctx, "pages", []) or []):
+        try:
+            page.goto("about:blank", timeout=5000)
+        except Exception:
+            pass
+
+    done = []
+
+    def shut():
+        try:
+            ctx.close()
+            done.append("ok")
+        except Exception as e:
+            done.append(f"{type(e).__name__}: {str(e)[:120]}")
+
+    t = threading.Thread(target=shut, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return f"timed out after {timeout}s — the HAR may be truncated"
+    return done[0] if done else "ok"
 
 
 def new_run_dir(root="core/artifacts", campaign="run"):
