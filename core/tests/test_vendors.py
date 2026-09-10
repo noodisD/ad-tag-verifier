@@ -189,3 +189,37 @@ def test_video_click_uses_the_same_redirector_as_display():
     assert vendors.classify(
         "https://track.adform.net/C/?bn=90116857&cpdir=https%3A%2F%2Fexample.com"
     ) == [("Adform", vendors.CLICK, "90116857")]
+
+
+def test_a_truncated_har_falls_back_to_what_was_recorded(tmp_path):
+    """A HAR whose write was cut short is unparsable JSON. The run still
+    happened and the recorder still saw it, so the analysis uses that rather
+    than failing outright — measured on an OLX listing page whose HAR close
+    had to be abandoned."""
+    from core.analyze import findings
+    har = tmp_path / "run.har"
+    har.write_text('{"log": {"entries": [{"request": {"url": "https://track.', encoding="utf-8")
+    meta = {
+        "_dir": str(tmp_path), "har": "run.har", "expected_id": "90194589",
+        "beacons": [{"vendor": "Adform", "kind": "impression", "id": "90194589",
+                     "evidence": "fired", "url": "https://track.adform.net/adfserve/?bn=90194589"}],
+    }
+    r = findings.analyze(meta, expected_id="90194589", require_click=False)
+    assert r["verdict"] == findings.PASS
+
+
+def test_a_wrapped_click_still_names_its_campaign():
+    """Ad Manager wraps the click: the Adform tracker arrives percent-encoded
+    inside `adurl=`, so the host matches while `?bn=` does not. Recorded on an
+    OLX ad page, where reading it as a click with no id reported a click that
+    landed on this campaign's own tracker as "the slot is carrying another
+    advertiser"."""
+    assert vendors.classify(
+        "https://adclick.g.doubleclick.net/pcs/click?xai=AKAOjs&sai=AMfl&urlfix=1"
+        "&adurl=https://track.adform.net/C/%3Fbn%3D90194589%3Bgdpr%3D1"
+    ) == [("Adform", vendors.CLICK, "90194589")]
+
+
+def test_an_unwrapped_click_is_unaffected():
+    assert vendors.classify("https://track.adform.net/C/?bn=90194589;gdpr=1") \
+        == [("Adform", vendors.CLICK, "90194589")]

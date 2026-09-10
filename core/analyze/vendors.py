@@ -8,6 +8,7 @@ finding. Every vendor here is therefore split by kind.
 """
 
 import re
+from urllib.parse import unquote
 
 # GAM's own library and ad-request endpoints live on this host. They are the
 # publisher's ad *infrastructure*, not a CM360 campaign beacon, and they fire
@@ -48,13 +49,21 @@ class Vendor:
     def classify(self, url):
         """-> (kind, id) or (None, None). Order matters: the most specific
         substring is tried first so a click URL is never read as an
-        impression."""
+        impression.
+
+        The id is looked for in the percent-decoded URL as well, because a
+        click frequently arrives wrapped: Ad Manager sends
+        `adclick.g.doubleclick.net/pcs/click?…&adurl=…track.adform.net/C/%3Fbn%3D90194589`,
+        where the host matches but `?bn=` does not. Reading that as a click
+        with no id turned a click that landed on this campaign's own tracker
+        into "the slot is carrying another advertiser".
+        """
         if GAM_INFRA in url:
             return None, None
         for kind, shapes in self.kinds.items():
             for sub, rx in shapes:
                 if sub in url:
-                    m = rx.search(url)
+                    m = rx.search(url) or rx.search(unquote(url))
                     return kind, (m.group(1) if m else None)
         return None, None
 

@@ -78,9 +78,18 @@ def analyze(meta, expected_id=None, require_click=True, rederive=True):
     if rederive:
         har = Path(meta.get("_dir", ".")) / meta.get("har", "run.har")
         if har.exists():
-            fired = beacons_from_har(har)
-            markup = [b for b in beacons if b.get("evidence") == "in_markup"]
-            beacons = fired + markup
+            try:
+                fired = beacons_from_har(har)
+            except Exception:
+                # A HAR whose write was cut short is unparsable JSON, and a
+                # page that would not stop making requests is exactly when
+                # that happens — see _close_context. The recorder saw those
+                # beacons live, so fall back to them rather than failing the
+                # whole analysis over the copy on disk.
+                fired = None
+            if fired is not None:
+                markup = [b for b in beacons if b.get("evidence") == "in_markup"]
+                beacons = fired + markup
 
     fired = [b for b in beacons if b.get("evidence") == "fired"]
     markup = [b for b in beacons if b.get("evidence") == "in_markup"]
