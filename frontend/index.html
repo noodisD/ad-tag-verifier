@@ -903,7 +903,16 @@ function extract(units, sourceLine) {
       const url = clean(raw);
       const platform = platformOf(url);
 
-      if (!platform) {
+      // A publisher's preview link is a page to open, not a tag to inventory —
+      // even when it carries parameters a vendor rule recognises. OLX hands out
+      // `www.olx.pl/...?creativeId=…&gdfp_req=1&google_preview=…`, which
+      // platformOf reads as Ad Manager, so those links became tag rows instead
+      // of test pages. With no test pages the tool fell back to offering every
+      // tag for a standalone self-check — including the sheet's, which must
+      // never be fired on their own.
+      const isPreviewPage = !!previewVariant(url);
+
+      if (!platform || isPreviewPage) {
         if (unit.isSheet) return;      // sheets book placements, they do not test them
         // The name the email gave this creative beats anything derivable from
         // the link. `DIS_2026-09-04_oferta-mlody_300x250_v1` says which
@@ -953,7 +962,14 @@ function extract(units, sourceLine) {
       fields.forEach(([key, , value]) => {
         if (matchFields.includes(key)) expected[key] = value;
       });
-      const verifiable = platform === "Adform" ? !!expected.bn
+      // A tag out of the trafficking sheet is never fired on its own. The
+      // sheet states what is *booked*; whether it serves is a question about
+      // the publisher's page, and requesting the pixel directly answers a
+      // different one — it proves the ad server responds, which it always
+      // does. So sheet rows stay as the expected side of the match and are
+      // not offered as something to run.
+      const verifiable = unit.isSheet ? false
+        : platform === "Adform" ? !!expected.bn
         : platform === "CM360" ? !!(expected.dc_trk_aid && expected.dc_trk_cid)
         : false;
 
@@ -974,6 +990,7 @@ function extract(units, sourceLine) {
       state.groups.push({
         gid, platform, label: platform + " " + counters[platform],
         primary: primaryOf(platform, fields), url, expected, verifiable, nameHint,
+        fromSheet: !!unit.isSheet,
         // The row's own wording. parseSizeVariant() reduces it to a size and a
         // variant, which is all the vendor match needs — but pairing against an
         // email works on the words themselves, so keep them.
@@ -1430,7 +1447,9 @@ function renderVerify() {
         <div class="verify-row skip">
           <span class="plat">${escapeHtml(g.platform)}</span>
           <span class="u" title="${escapeHtml(g.url)}">${escapeHtml(g.url)}</span>
-          <span class="status-pill skip">not verifiable standalone</span>
+          <span class="status-pill skip">${g.fromSheet
+            ? "from the sheet — booked, checked on the publisher&rsquo;s page"
+            : "not verifiable standalone"}</span>
         </div>`;
     }
     const v = state.verify[g.gid] || { status: "idle" };
