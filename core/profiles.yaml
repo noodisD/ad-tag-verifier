@@ -76,6 +76,16 @@ profiles:
     patience: 90
     scroll_passes: 8
 
+  - name: olx
+    match: ["olx.pl", "otomoto.pl"]
+    # A listing page keeps loading while you read it. Measured: the screening
+    # slot fires at ~20s, but the in-listing 300x250 on m.olx.pl was still
+    # not there at 45s and reported as "no tag", and the pages themselves run
+    # 66-72s wall-clock. The extra scrolling is for the same slot: it sits
+    # well down a listing, past where six passes reach on a phone viewport.
+    patience: 100
+    scroll_passes: 12
+
   # ── URL shapes: how the page has to be driven ─────────────────────────
 
   - name: gam-preview
@@ -97,9 +107,12 @@ profiles:
       - "push-ad.com/preview"
       - "backend.adquery.io"
     # Isolated creative, no competing inventory on the page. This is the case
-    # automation handles perfectly, so keep it cheap.
+    # automation handles perfectly, so keep it cheap — but not as cheap as 25s:
+    # an Adquery 300x600 preview logged "impression NOT seen within 25s" and
+    # then fired `bn=90194594` while the run was already past the wait, so the
+    # click was skipped on a creative that had in fact rendered.
     strategy: load
-    patience: 25
+    patience: 45
     scroll_passes: 2
 
   - name: adnami-sandbox

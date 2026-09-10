@@ -29,10 +29,13 @@ class TestMeasuredPatience:
         assert s["patience"] > 96.9
 
     def test_creative_preview_is_cheap(self):
-        # Isolated creative, nothing competing — no reason to wait a minute.
+        # Isolated creative, nothing competing — no reason to wait as long as
+        # a live portal page. Not as short as 25s either: an Adquery preview
+        # logged "impression NOT seen within 25s" and then fired, so the run
+        # skipped the click on a creative that had rendered.
         s = profiles.resolve(
             "https://displayvideo.google.com/doubleclick/preview/main?creativeId=xbid.1")
-        assert s["patience"] <= 30
+        assert 30 <= s["patience"] <= 50
         assert s["strategy"] == "load"
 
 

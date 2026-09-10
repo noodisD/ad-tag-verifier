@@ -13,7 +13,6 @@ devtools, including the publisher's.
 
 import json
 import re
-import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -219,39 +218,32 @@ def capture(target, browser, out_root, viewport="desktop", overrides=None):
     return meta
 
 
-def _close_context(ctx, timeout=45):
-    """Close the context — which is what writes the HAR — without letting it
-    hang the run.
+def _close_context(ctx):
+    """Close the context — which is what writes the HAR.
 
     Measured on an OLX listing page: `ctx.close()` sat for over twenty
     minutes and the run never reached its second target, because the page
     keeps a long-lived connection open and the HAR will not finalise while
     requests are still in flight. Blanking every page first ends that
-    traffic; the timeout is there for the case where something still refuses,
-    and losing one HAR is a far smaller loss than losing every target queued
-    behind it.
+    traffic, and that alone fixed it.
+
+    Not done in a worker thread with a timeout, which was the first attempt:
+    Playwright's sync API refuses to be driven from another thread
+    ("Cannot switch to a different thread"), so every close failed and every
+    HAR since was truncated — the tool quietly stopped keeping the evidence
+    it exists to keep. A guard that breaks the thing it guards is worse than
+    the hang it was written for.
     """
     for page in list(getattr(ctx, "pages", []) or []):
         try:
             page.goto("about:blank", timeout=5000)
         except Exception:
             pass
-
-    done = []
-
-    def shut():
-        try:
-            ctx.close()
-            done.append("ok")
-        except Exception as e:
-            done.append(f"{type(e).__name__}: {str(e)[:120]}")
-
-    t = threading.Thread(target=shut, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        return f"timed out after {timeout}s — the HAR may be truncated"
-    return done[0] if done else "ok"
+    try:
+        ctx.close()
+        return "ok"
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)[:120]}"
 
 
 def new_run_dir(root="core/artifacts", campaign="run"):
