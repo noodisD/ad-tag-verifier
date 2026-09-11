@@ -75,3 +75,10 @@ def test_a_video_click_counts_as_an_attempt():
                        "click confirmed by beacon 90116854 (video)"],
             "click_result": "confirmed"}
     assert engine._click_attempted(meta) is True
+
+
+def test_the_frame_path_click_counts_too():
+    """Recorded on Interia: the frame path logged "click element at (1180,723)"
+    while every other path logged "<source> click at (x,y)", so twenty runs
+    that had clicked reported the click as never attempted."""
+    assert engine._click_attempted({"events": ["element click at (1180,723)"]}) is True

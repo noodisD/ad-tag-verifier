@@ -155,6 +155,15 @@ profiles:
     patience: 90
     scroll_passes: 8
 
+  - name: interia-adtester
+    match: ["adtester2023"]
+    # Interia's own preview, and the same shape as RASP's `#adbeta=`: the slot
+    # is named in the URL fragment and read at load, so the fragment has to be
+    # on the first navigation. Arriving at the same page and only changing the
+    # hash does not reload, and the slot then never initialises.
+    patience: 90
+    scroll_passes: 8
+
   - name: rasp-adbeta
     match: ["adbeta="]
     # RASP's own preview mechanism (businessinsider.com.pl, kultura.onet.pl).

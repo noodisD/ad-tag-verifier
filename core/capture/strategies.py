@@ -305,7 +305,7 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
     # creative. element.click() targets the element itself and is still a
     # trusted event (it is CDP input, unlike page.evaluate("el.click()"),
     # which publishers' overlays ignore because isTrusted is false).
-    _log(meta, f"click element at ({cx:.0f},{cy:.0f})")
+    _log(meta, f"element click at ({cx:.0f},{cy:.0f})")
     try:
         with ctx.expect_page(timeout=8000) as popup:
             try:

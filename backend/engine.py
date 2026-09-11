@@ -85,8 +85,10 @@ def _click_attempted(meta):
     # Every path that actually clicks logs "<source> click at (x,y)" — element,
     # overlay, model, video. Listing the sources by hand meant a new strategy
     # silently reported its clicks as never attempted: the video runs came back
-    # with a confirmed beacon next to "click not confirmed".
-    if any(" click at (" in e for e in events):
+    # with a confirmed beacon next to "click not confirmed". The frame path
+    # used to word its own line differently ("click element at"), which is why
+    # the shape is now uniform rather than the matcher being made cleverer.
+    if any("click at (" in e for e in events):
         return True
     if any("click skipped" in e or "link click failed" in e for e in events):
         return False
