@@ -121,3 +121,14 @@ def test_measurement_click_pixels_do_not_identify_an_advertiser():
 def test_measurement_alone_is_not_a_click():
     rec = Rec([_click("237250412", vendor="ABT Shield")])
     assert cc.click_confirmed(rec, "90116857", 0) == ("none", None)
+
+
+def test_a_click_with_nothing_expected_is_not_confirmed():
+    """Measured on a moto.pl preview that never rendered this campaign's
+    creative: the run clicked what was in the slot, a CM360 click tracked, and
+    with no expected id it was reported as "click confirmed" — for the
+    advertiser whose landing page it had just opened."""
+    rec = Rec([_click("455881285", vendor="CM360")])
+    verdict, ident = cc.click_confirmed(rec, None, 0)
+    assert verdict == "unattributed"
+    assert ident == "455881285"

@@ -403,6 +403,9 @@ def _confirm_click(recorder, meta, expected_id, since, source):
     meta["click_result"] = verdict
     if verdict == "confirmed":
         _log(meta, f"click confirmed by beacon {ident} ({source})")
+    elif verdict == "unattributed":
+        _log(meta, f"a click tracked for {ident}, but nothing said which id to "
+                   f"expect — it cannot be credited to this campaign")
     elif verdict == "other_advertiser":
         _log(meta, f"click tracked for a DIFFERENT id ({ident}) — not this "
                    f"campaign; the slot is carrying another advertiser")

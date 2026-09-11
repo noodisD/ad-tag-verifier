@@ -112,7 +112,8 @@ def _sane_box(reply, viewport):
 def click_confirmed(recorder, expected_id, since_index):
     """Did the click produce the campaign's own click beacon?
 
-    -> ("confirmed", id) | ("other_advertiser", id) | ("none", None)
+    -> ("confirmed", id) | ("other_advertiser", id) | ("unattributed", id)
+       | ("none", None)
 
     `since_index` is len(recorder.beacons) taken immediately before clicking,
     so an earlier click on the same page cannot be counted twice.
@@ -137,7 +138,11 @@ def click_confirmed(recorder, expected_id, since_index):
         # says something real about the slot, and it is not this campaign's
         # click working.
         return "other_advertiser", clicks[0].get("id")
-    return "confirmed", clicks[0].get("id")
+    # Nothing was expected, so nothing can be credited. Measured on a moto.pl
+    # preview that never rendered the campaign's creative: the run clicked
+    # what was in the slot, a CM360 click tracked, and it was reported as
+    # "click confirmed" — for SkyShowtime, whose landing page it opened.
+    return "unattributed", clicks[0].get("id")
 
 
 class VisionMatcher:

@@ -61,8 +61,10 @@ profiles:
     patience: 75
 
   - name: agora
-    match: ["gazeta.pl", "sport.pl"]
-    patience: 60
+    match: ["gazeta.pl", "sport.pl", "moto.pl", "wyborcza.pl"]
+    # moto.pl needed the longer end of this: a GAM preview there had not
+    # produced an impression at 45s.
+    patience: 90
 
   - name: polsat
     match: ["interia.pl"]

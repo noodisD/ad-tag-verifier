@@ -1604,6 +1604,8 @@ function renderScan() {
       // its own right and a different conversation with the publisher.
       const clickNote = r.click_result === "other_advertiser"
                         ? "clicked, but the click tracked another advertiser"
+                      : r.click_result === "unattributed"
+                        ? "a click tracked, but nothing said which ID to expect"
                       // The player took the click as play/pause and the ad
                       // never saw it. Nothing was learned about the tag.
                       : r.click_result === "not_testable"
