@@ -464,6 +464,7 @@
         </div>
         <div>
           <button type="button" class="btn-outline" id="runScan" disabled>Scan test pages</button>
+          <button type="button" class="btn-outline" id="rerunUnresolved" hidden></button>
           <div class="backend-hint">
             <label for="advertiser">advertiser</label>
             <input id="advertiser" type="text" list="advertisers" placeholder="e.g. Shell" size="22">
@@ -1496,9 +1497,15 @@ function endWatch() {
 
 // ── Step 1: scan ────────────────────────────────────────────────────────
 
-function runScan() {
+function runScan(only) {
   const advertiser = (document.getElementById("advertiser").value || "").trim();
-  const targets = state.testTargets.map(t => ({ id: t.tid, url: t.url, advertiser, viewport: guessViewport(t) }));
+  // `only` is a list of tids — re-running part of a scan keeps the results
+  // already gathered for the rest, so a second attempt at four rows does not
+  // cost the sixteen that were fine.
+  const pick = only && only.length
+    ? state.testTargets.filter(t => only.includes(t.tid))
+    : state.testTargets;
+  const targets = pick.map(t => ({ id: t.tid, url: t.url, advertiser, viewport: guessViewport(t) }));
   if (!targets.length || state.scanning) return;
 
   const token = ++runToken;
@@ -1541,6 +1548,25 @@ function runScan() {
     });
 }
 
+// Rows that did not come back with a clean impression-and-click. Deliberately
+// wider than "failed": a page that fired nothing, a run that errored, and a
+// placement whose click was never successfully attempted are all worth another
+// go, and the third is the commonest — on a page carrying several
+// advertisers the click lands on the wrong creative often enough that a
+// second run frequently settles it.
+function unresolvedTargets() {
+  return state.testTargets.filter(t => {
+    const r = state.scan[t.tid];
+    if (!r || r.status === "idle") return false;         // never scanned
+    if (r.status === "pending" || r.status === "running") return false;
+    if (r.status !== "done") return true;                // none / error
+    const serving = Object.keys(r.vendors || {})
+      .filter(v => VENDOR_ROLE[v] !== "measurement");
+    if (!serving.length) return true;                    // measurement only
+    return serving.some(v => !((r.kinds || {})[v] || {}).click);
+  }).map(t => t.tid);
+}
+
 function discoveredVendors() {
   const set = new Set();
   Object.values(state.scan).forEach(r => {
@@ -1562,6 +1588,14 @@ function renderScan() {
   btn.textContent = state.scanning
     ? "Scanning… " + done + "/" + state.testTargets.length
     : (done ? "Re-scan " : "Scan ") + state.testTargets.length + " test page" + (state.testTargets.length === 1 ? "" : "s");
+  const again = document.getElementById("rerunUnresolved");
+  const unresolved = unresolvedTargets();
+  again.hidden = state.scanning || !unresolved.length;
+  again.disabled = state.backend !== "up";
+  again.textContent = "Re-run " + unresolved.length + " unresolved";
+  again.title = "Rows that fired nothing, errored, or whose click was never "
+              + "confirmed. The rows that came back clean are kept as they are.";
+
   const scanHint = document.getElementById("scanHint");
   const watching = state.scanning && state.watchIds.length;
   if (watching) {
@@ -2018,7 +2052,9 @@ document.getElementById("dropzone").addEventListener("drop", (e) => {
 });
 
 document.getElementById("runVerify").addEventListener("click", runVerification);
-document.getElementById("runScan").addEventListener("click", runScan);
+document.getElementById("runScan").addEventListener("click", () => runScan());
+document.getElementById("rerunUnresolved")
+  .addEventListener("click", () => runScan(unresolvedTargets()));
 document.getElementById("vendorPicker").addEventListener("click", (e) => {
   const chip = e.target.closest("[data-vendor]");
   if (!chip) return;
