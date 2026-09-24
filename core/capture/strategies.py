@@ -38,21 +38,34 @@ def _scroll(page, settings):
         pass
 
 
-def _wait_for_impression(recorder, settings, meta, expected_id=None):
+def _wait_for_impression(recorder, settings, meta, expected_id=None, wait_for=None):
     """Poll for the campaign's impression beacon.
 
     Waiting long enough is the single most consequential setting here. A
     publisher whose stack takes 90s looks identical to one with no tag
     implemented if the budget is 10s, and the second reading is the one that
     gets reported to the publisher as a fault.
+
+    `wait_for` is a set of ids — the campaign's own, from the trafficking
+    sheet — used only to decide when to stop waiting, never what to record.
+    Without it a scan stops at the first impression of *anyone*, and on
+    dziennik.pl the campaign's creative only arrives on a slot refresh 132s
+    after load: a foreign tag at 20s would end the run before ours had a
+    chance to appear.
     """
+    ids = {str(i) for i in (wait_for or []) if i}
+
     def seen():
         if expected_id:
             return recorder.has(kind=vendors.IMPRESSION, ident=expected_id)
+        if ids:
+            return any(recorder.has(kind=vendors.IMPRESSION, ident=i) for i in ids)
         return recorder.has(kind=vendors.IMPRESSION)
 
     ok = recorder.wait_for(seen, settings["patience"], settings.get("poll_interval", 0.5))
-    _log(meta, f"impression {'seen' if ok else 'NOT seen'} within {settings['patience']}s")
+    what = ("this campaign's impression" if (expected_id or ids) else "an impression")
+    _log(meta, f"{what} {'seen' if ok else 'NOT seen'} within {settings['patience']}s"
+               + (f" (waited for {len(ids)} sheet ids)" if ids and not expected_id else ""))
     return ok
 
 
@@ -420,7 +433,8 @@ def load(page, ctx, recorder, settings, meta, target):
     page.goto(target["url"], wait_until="load", timeout=60000)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
     _scroll(page, settings)
-    _wait_for_impression(recorder, settings, meta, target.get("expected_id"))
+    _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
+                         target.get("wait_for"))
     _click_creative(page, ctx, recorder, settings, meta, target.get("expected_id"))
 
 
@@ -441,7 +455,8 @@ def gam_preview(page, ctx, recorder, settings, meta, target):
     _log(meta, "second load (renders creative)")
     consent.accept(page, 1.5)
     _scroll(page, settings)
-    _wait_for_impression(recorder, settings, meta, target.get("expected_id"))
+    _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
+                         target.get("wait_for"))
     _click_creative(page, ctx, recorder, settings, meta, target.get("expected_id"))
 
 

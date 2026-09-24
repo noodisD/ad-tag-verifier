@@ -138,3 +138,36 @@ def test_video_needs_a_window():
     measurement came from."""
     from core.capture import strategies
     assert "video" in strategies.NEEDS_WINDOW
+
+
+class TestWaitingForTheCampaign:
+    """The wait stops on this campaign's tag, not on whoever's fires first."""
+
+    class _Rec:
+        def __init__(self, fired):
+            self.fired = fired            # {(kind, id)}
+        def has(self, kind=None, ident=None, vendor=None, fired_only=True):
+            return any(k == kind and (ident is None or i == ident) for k, i in self.fired)
+        def wait_for(self, predicate, timeout, poll=0.5):
+            return predicate()
+
+    def _wait(self, fired, **kw):
+        from core.capture import strategies
+        meta = {"events": []}
+        ok = strategies._wait_for_impression(self._Rec(fired), {"patience": 1}, meta, **kw)
+        return ok, meta["events"][-1]
+
+    def test_a_foreign_impression_does_not_end_the_wait(self):
+        ok, _ = self._wait({("impression", "457198692")},
+                           wait_for=["457786509", "457783524"])
+        assert ok is False
+
+    def test_the_campaigns_own_impression_does(self):
+        ok, msg = self._wait({("impression", "457198692"), ("impression", "457786509")},
+                             wait_for=["457786509", "457783524"])
+        assert ok is True
+        assert "this campaign" in msg
+
+    def test_without_a_sheet_any_impression_still_counts(self):
+        ok, _ = self._wait({("impression", "457198692")})
+        assert ok is True

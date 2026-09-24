@@ -82,3 +82,23 @@ def test_the_frame_path_click_counts_too():
     while every other path logged "<source> click at (x,y)", so twenty runs
     that had clicked reported the click as never attempted."""
     assert engine._click_attempted({"events": ["element click at (1180,723)"]}) is True
+
+
+def test_the_campaigns_ids_reach_the_capture(monkeypatch, tmp_path):
+    """The UI sends the sheet's ids so the capture knows when it may stop
+    waiting. Dropping them here would silently restore the old behaviour —
+    stopping at whoever's tag fires first."""
+    seen = {}
+
+    def fake_capture(job, browser, run_dir, viewport="desktop", overrides=None):
+        seen.update(job)
+        d = tmp_path / job["id"]
+        d.mkdir()
+        (d / "meta.json").write_text('{"id": "%s", "events": [], "beacons": []}' % job["id"],
+                                     encoding="utf-8")
+        return {}
+
+    monkeypatch.setattr(engine.session, "capture", fake_capture)
+    engine.discover(None, {"id": "t0", "url": "https://www.dziennik.pl/?version=cbm-gory",
+                           "wait_for": ["457786509", 457783524, None, ""]}, tmp_path)
+    assert seen["wait_for"] == ["457786509", "457783524"]

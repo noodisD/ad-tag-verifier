@@ -485,7 +485,7 @@
       <div class="verify-head">
         <div>
           <div class="headline-md">2 &nbsp;·&nbsp; Which tags to check</div>
-          <div class="desc">Adform and CM360 are the serving tags; ABT Shield and DoubleVerify ride alongside as measurement vendors. Pick what this campaign is supposed to carry.</div>
+          <div class="desc">Adform and CM360 are the serving tags; ABT Shield, DoubleVerify and IAS ride alongside as measurement vendors. Pick what this campaign is supposed to carry.</div>
         </div>
       </div>
       <div class="vendor-picker" id="vendorPicker"></div>
@@ -596,6 +596,7 @@ const MAIN_VENDORS = ["Adform", "CM360"];
 const VENDOR_ROLE = {
   "Adform": "serving", "CM360": "serving",
   "ABT Shield": "measurement", "DoubleVerify": "measurement",
+  "IAS": "measurement",
 };
 // The engine's verdicts, and how each should read. "impression only" and
 // "wrong tag" are both failures, but of different kinds and for different
@@ -628,6 +629,9 @@ const MATCH_FIELDS = {
   "CM360": ["placement", "dc_trk_aid", "dc_trk_cid"],
   "ABT Shield": ["o"],
   "DoubleVerify": ["plc"],
+  // Booked per placement, unlike ABT: every sheet row carries its own
+  // pubEntityId, so the IAS tag that fired says which placement it belongs to.
+  "IAS": ["pubEntityId"],
 };
 
 function platformOf(u) {
@@ -636,6 +640,9 @@ function platformOf(u) {
   if (l.includes("doubleclick.net/ddm/track")) return "CM360";
   if (l.includes("abtshield.com")) return "ABT Shield";
   if (l.includes("doubleverify.com")) return "DoubleVerify";
+  // By host: a page URL inside an analytics call can mention the domain, and
+  // that is not an IAS tag.
+  if (/^https?:\/\/([a-z0-9-]+\.)*adsafeprotected\.com([\/?#:]|$)/.test(l)) return "IAS";
   if (/[?&]gdfp_req=/.test(l) || (/[?&]iu=/.test(l) && l.includes("google_preview"))) return "Ad Manager";
   return null;
 }
@@ -670,6 +677,14 @@ function fieldsOf(u, platform) {
       const v = param(u, k);
       if (v) out.push([k, label, v]);
     });
+  } else if (platform === "IAS") {
+    // fw.js carries the ids in the query, the noscript pixel in the path
+    // (/rfw/st/<adv>/<pub>/skeleton.gif) — one placement, adjacent ids.
+    const path = u.match(/\/rfw\/st\/(\d+)\/(\d+)\//);
+    const pub = param(u, "pubEntityId") || (path && path[2]);
+    const adv = param(u, "advEntityId") || (path && path[1]);
+    if (pub) out.push(["pubEntityId", "pubEntityId", pub]);
+    if (adv) out.push(["advEntityId", "advEntityId", adv]);
   } else if (platform === "Ad Manager") {
     [["iu", "iu"], ["lineItemId", "lineItemId"], ["creativeId", "creativeId"], ["gdfp_req", "gdfp_req"]].forEach(([k, label]) => {
       const v = param(u, k);
@@ -719,6 +734,17 @@ const PREVIEW_MARKERS = [
   "/gampad/preview",
 ];
 
+// What the email called a test, cleaned of what pasting left behind. A link
+// copied out of a mail client arrives as `[www.dziennik.pl/?version=cbm-gory](…)`
+// and read as the test's name "[www.dziennik.pl/?version=cbm-gory]( )". When
+// all that is left is the link's own text, there is no name — the label built
+// from size and variant says it better.
+function describe(text) {
+  const t = (text || "").replace(/\[([^\]]*)\]\(\s*\)/g, "$1").replace(/\s+/g, " ").trim();
+  if (!t || /^(www\.|https?:\/\/)\S+$/i.test(t)) return "";
+  return t.slice(0, 90);
+}
+
 function previewVariant(url) {
   // Publishers nest one URL inside another, which percent-encodes the marker
   // out of reach: a TVP link carries `google_preview%3D…` inside its redirect
@@ -726,6 +752,16 @@ function previewVariant(url) {
   let decoded = url;
   try { decoded = decodeURIComponent(url); } catch (e) { /* malformed escape */ }
   const low = (url + " " + decoded).toLowerCase();
+  // Infor's own preview is `?version=<name>` on its titles, and a name like
+  // `cbm-gory` carries no size — so without this the link fell through every
+  // check and was dropped without a word: four of fourteen BNP tests vanished
+  // from the scan before it started.
+  const infor = /^https?:\/\/([a-z0-9-]+\.)*(dziennik|forsal|gazetaprawna|infor)\.pl\//.test(low)
+                && /[?&]version=[^&#]+/.test(low);
+  if (infor) {
+    const v = url.match(/[?&]version=([^&#]+)/i);
+    return decodeURIComponent(v[1]).replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 44);
+  }
   if (!PREVIEW_MARKERS.some(m => low.includes(m))) return null;
   // creName first, and not just because it reads better: it names the
   // creative, while wfName names the whole campaign workflow and is the
@@ -744,7 +780,8 @@ function previewVariant(url) {
 // mobile, and the backend defaults to desktop when told nothing — so a
 // `creName=mobile` link was being opened in a 1400px window, where the mobile
 // creative cannot serve and the run reports a tag that is fine as missing.
-const MOBILE_HINTS = ["mobile", "navik", "smartfon", "phone", "interstitial", "mob_"];
+const MOBILE_HINTS = ["mobile", "navik", "smartfon", "phone", "interstitial", "mob_",
+                      "version=cbm"];
 // Only formats that are mobile *and nothing else*. 300x250 and 300x600 were
 // on this list and are the two commonest desktop sidebar sizes — every one of
 // them was being opened in a 390px window, where a desktop creative cannot
@@ -942,7 +979,7 @@ function extract(units, sourceLine) {
           // What the email called this creative, kept verbatim. The parsed
           // size and variant are for matching; this is what a person reads to
           // check the verdict against the mail they were sent.
-          desc: (nameSource || "").replace(/\s+/g, " ").trim().slice(0, 90),
+          desc: describe(nameSource),
           source: unit.ref, snippet: unit.snippet || fullText, snippetLabel: unit.snippetLabel
         });
         addedTargets++;
@@ -1164,25 +1201,56 @@ function onFile(file) {
 
 function reportRows() {
   const out = [];
+  const idx = sheetIndex();
+  const picked = state.selectedVendors && state.selectedVendors.size
+    ? v => state.selectedVendors.has(v) : () => true;
   state.testTargets.forEach(t => {
     const r = state.scan[t.tid];
-    if (!r || !r.vendors) return;
+    // A test the report leaves out reads as a test that passed. Pages where
+    // nothing fired, runs that errored and pages never scanned all get a line.
+    const base = { test: t.desc || targetLabel(t), url: t.url, measurement: false,
+                   publisher: "—", ids: "—", sheet: "—" };
+    if (!r || r.status === "idle" || r.status === "pending" || r.status === "running") {
+      out.push({ ...base, vendor: "—", imp: "not scanned", clk: "—", missing: true });
+      return;
+    }
+    if (r.status === "error") {
+      out.push({ ...base, vendor: "—", imp: "run failed", clk: "—", missing: true,
+                 sheet: (r.detail || "").slice(0, 120) || "—" });
+      return;
+    }
     const kinds = r.kinds || {};
-    Object.keys(r.vendors).forEach(vendor => {
+    const vendorsHere = Object.keys(r.vendors || {}).filter(picked);
+    if (!vendorsHere.length) {
+      const seen = Object.keys(r.vendors || {});
+      out.push({ ...base, vendor: "—", imp: "no", clk: "no", missing: true,
+                 sheet: seen.length ? "only unselected vendors fired: " + seen.join(", ")
+                                    : "no tags fired" });
+    }
+    vendorsHere.forEach(vendor => {
       const k = kinds[vendor] || {};
       const measurement = VENDOR_ROLE[vendor] === "measurement";
       const ids = Object.values(r.vendors[vendor]).flat();
       const sheet = [...new Set((MATCH_FIELDS[vendor] || Object.keys(r.vendors[vendor]))
         .flatMap(f => (r.vendors[vendor][f] || [])
-          .flatMap(v => (((sheetIndex()[vendor] || {})[f] || {})[v] || [])
+          .flatMap(v => (((idx[vendor] || {})[f] || {})[v] || [])
             .map(g => g.rowName).filter(Boolean))))];
+      // Split what fired into this campaign's ids and everyone else's, so a
+      // foreign tag sharing the page is listed, not reported as ours failing.
+      const fields = MATCH_FIELDS[vendor] || Object.keys(r.vendors[vendor]);
+      const inSheet = [], foreign = [];
+      fields.forEach(f => (r.vendors[vendor][f] || []).forEach(v => {
+        ((((idx[vendor] || {})[f] || {})[v] || []).length ? inSheet : foreign).push(v);
+      }));
       out.push({
         publisher: sheet.map(publisherOf).find(Boolean) || "—",
         test: t.desc || targetLabel(t),
         url: t.url,
         vendor, measurement,
-        ids: ids.join(", "),
-        sheet: sheet.join("; ") || (measurement ? "n/a — fixed order id" : "not in sheet"),
+        ids: (inSheet.length ? inSheet : ids).join(", "),
+        others: inSheet.length ? [...new Set(foreign)].join(", ") : "",
+        sheet: sheet.join("; ")
+               || (FIXED_ID_VENDORS.includes(vendor) ? "n/a — fixed order id" : "not in sheet"),
         imp: measurement ? "seen" : (k.impression ? "yes" : "no"),
         clk: measurement ? "n/a"
              : k.click ? "yes"
@@ -1196,19 +1264,26 @@ function reportRows() {
 
 function reportText(rows) {
   const ok = rows.filter(r => r.imp === "yes" && r.clk === "yes").length;
+  const empty = rows.filter(r => r.missing).length;
   const lines = [
-    `Tag verification — ${state.testTargets.length} test page(s), ${rows.length} tag(s) observed`,
-    `${ok} with both impression and click confirmed`,
+    `Tag verification — ${state.testTargets.length} test page(s), ${rows.filter(r => !r.missing).length} tag(s) observed`,
+    `${ok} with both impression and click confirmed` + (empty ? `, ${empty} page(s) with nothing to report` : ""),
     "",
   ];
   rows.forEach(r => {
-    const mark = r.measurement ? "•" : (r.imp === "yes" && r.clk === "yes") ? "OK"
+    const mark = r.missing ? "!!" : r.measurement ? "•" : (r.imp === "yes" && r.clk === "yes") ? "OK"
                : r.clk === "not tested" ? "??" : "!!";
     lines.push(`${mark}  ${r.publisher !== "—" ? r.publisher + " · " : ""}${r.test}`);
     lines.push(`    ${r.url}`);
+    if (r.missing) {
+      lines.push(`    ${r.sheet === "—" ? "no tags fired" : r.sheet}`);
+      lines.push("");
+      return;
+    }
     lines.push(`    ${r.vendor}  ${r.ids}`);
     lines.push(`    placement: ${r.sheet}`);
-    lines.push(`    impression: ${r.imp}   click: ${r.clk}`);
+    lines.push(r.measurement ? `    seen` : `    impression: ${r.imp}   click: ${r.clk}`);
+    if (r.others) lines.push(`    also on the page, not this campaign: ${r.others}`);
     lines.push("");
   });
   if (rows.some(r => r.clk === "not tested")) {
@@ -1226,17 +1301,18 @@ function reportHtml(rows) {
     // Red is reserved for something that did not fire. A click nobody managed
     // to attempt is unknown, not failed — colouring it like a defect is how a
     // correct placement gets raised with a publisher.
-    const failed = !r.measurement && (r.imp === "no" || r.clk === "no");
+    const failed = r.missing || (!r.measurement && (r.imp === "no" || r.clk === "no"));
     const unknown = !r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed;
     const tint = failed ? "background:#f8e9e7;" : unknown ? "background:#f6efdd;" : "";
     return `<tr>
       <td style="${cell}${tint}">${escapeHtml(r.publisher)}</td>
       <td style="${cell}${tint}"><b>${escapeHtml(r.test)}</b><br>
         <span style="font-size:11px;color:#666;">${escapeHtml(r.url)}</span></td>
-      <td style="${cell}${tint}">${escapeHtml(r.vendor + " " + r.ids)}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.sheet)}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.imp)}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.clk)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.missing ? "—" : r.vendor + " " + r.ids)}${r.others
+        ? `<br><span style="font-size:11px;color:#666;">also on page: ${escapeHtml(r.others)}</span>` : ""}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.measurement ? "seen" : r.imp)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.measurement ? "n/a" : r.clk)}</td>
     </tr>`;
   }).join("");
   return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;">
@@ -1505,7 +1581,14 @@ function runScan(only) {
   const pick = only && only.length
     ? state.testTargets.filter(t => only.includes(t.tid))
     : state.testTargets;
-  const targets = pick.map(t => ({ id: t.tid, url: t.url, advertiser, viewport: guessViewport(t) }));
+  // The campaign's own serving ids, when a sheet is loaded. The backend uses
+  // them only to decide when it may stop waiting — everything that fires is
+  // still recorded. Without them a scan stops at whoever's tag fires first,
+  // and on dziennik.pl the campaign's creative arrived on a slot refresh at
+  // 147s, long after a foreign tag would have ended the wait.
+  const waitFor = campaignIds();
+  const targets = pick.map(t => ({ id: t.tid, url: t.url, advertiser,
+                                   viewport: guessViewport(t), wait_for: waitFor }));
   if (!targets.length || state.scanning) return;
 
   const token = ++runToken;
@@ -1554,6 +1637,14 @@ function runScan(only) {
 // go, and the third is the commonest — on a page carrying several
 // advertisers the click lands on the wrong creative often enough that a
 // second run frequently settles it.
+// Measurement vendors whose id is booked per placement, and so can be checked
+// against the placement the serving tag fired for. ABT is the opposite case:
+// one fixed order id for the whole account.
+function measurementPerPlacement(v) {
+  return VENDOR_ROLE[v] === "measurement" && !FIXED_ID_VENDORS.includes(v)
+         && (MATCH_FIELDS[v] || []).length > 0;
+}
+
 function unresolvedTargets() {
   return state.testTargets.filter(t => {
     const r = state.scan[t.tid];
@@ -1565,6 +1656,16 @@ function unresolvedTargets() {
     if (!serving.length) return true;                    // measurement only
     return serving.some(v => !((r.kinds || {})[v] || {}).click);
   }).map(t => t.tid);
+}
+
+function campaignIds() {
+  const idx = sheetIndex();
+  const out = new Set();
+  MAIN_VENDORS.forEach(v => {
+    const primary = (MATCH_FIELDS[v] || [])[0];
+    Object.keys(((idx[v] || {})[primary]) || {}).forEach(id => out.add(id));
+  });
+  return [...out];
 }
 
 function discoveredVendors() {
@@ -1797,6 +1898,15 @@ function renderMatch() {
       return "Unassigned";
     })();
 
+    const servingRows = new Set();
+    MAIN_VENDORS.forEach(v => {
+      (MATCH_FIELDS[v] || []).forEach(f => {
+        (((r.vendors || {})[v] || {})[f] || []).forEach(val => {
+          (((idx[v] || {})[f] || {})[val] || []).forEach(g => g.rowName && servingRows.add(g.rowName));
+        });
+      });
+    });
+
     return vendors.map(vendor => {
       const found = r.vendors[vendor];
       const label = `${targetLabel(t)} · ${vendor}`;
@@ -1853,6 +1963,29 @@ function renderMatch() {
                    note: t.size && booked.includes(t.size) ? "in sheet · " + t.size : "in sheet" };
         });
       }).flat();
+      // The ID is the identity. When one of the IDs on the page is in the
+      // sheet, this campaign's tag fired; the others are other advertisers
+      // sharing the page, and calling them a mismatch raised a false alarm on
+      // every dziennik.pl test, where a DV360 buy ran beside ours.
+      const ours = checks.filter(c => c.cls === "ok" || c.note.startsWith("SIZE MISMATCH"));
+      if (ours.length) {
+        checks.forEach(c => {
+          if (c.note === "not in sheet") { c.cls = ""; c.note = "another advertiser on the page"; }
+        });
+      }
+      // A measurement tag booked per placement should belong to the same
+      // placement as the serving tag beside it. IAS for the 300x600 next to a
+      // 300x250 CM360 tag is a wrong implementation even though both are in
+      // the sheet.
+      if (measurementPerPlacement(vendor) && servingRows.size && ours.length) {
+        const mine = new Set(ours.flatMap(c =>
+          (((idx[vendor] || {})[c.f] || {})[c.val] || []).map(g => g.rowName)));
+        if (![...mine].some(n => servingRows.has(n))) {
+          checks.push({ f: vendor, val: "placement", cls: "bad",
+                        note: vendor + " tag belongs to " + [...mine].join(" / ")
+                              + ", not to the placement the serving tag fired for" });
+        }
+      }
       const bad = checks.some(c => c.cls === "bad");
       // Nothing checked is not a pass. When the vendor's identifying field is
       // not among what the page reported, `checks` comes out empty and this

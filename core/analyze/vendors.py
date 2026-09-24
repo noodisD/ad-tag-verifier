@@ -8,7 +8,7 @@ finding. Every vendor here is therefore split by kind.
 """
 
 import re
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 # GAM's own library and ad-request endpoints live on this host. They are the
 # publisher's ad *infrastructure*, not a CM360 campaign beacon, and they fire
@@ -155,7 +155,41 @@ class DoubleVerify(Vendor):
         return MEASUREMENT, (m.group(1) if m else "present")
 
 
-VENDORS = [ADFORM, CM360, AbtShield(), DoubleVerify()]
+class IAS(Vendor):
+    """Integral Ad Science — verification riding alongside the serving tag,
+    no click side of its own.
+
+    Unlike ABT Shield it is booked per placement: every row of a trafficking
+    sheet carries its own `pubEntityId`, so which IAS tag fired says which
+    placement it was implemented for, and that can be checked against the
+    serving tag beside it. Two shapes, both off the sheet and the live page:
+
+      staticjs.adsafeprotected.com/fw.js?advEntityId=3088332&pubEntityId=96486869
+      pixel.adsafeprotected.com/rfw/st/3088332/96486868/skeleton.gif   (noscript)
+
+    The script and its noscript pixel carry adjacent ids (N+1 and N) for the
+    same placement; the sheet side indexes both, so either form matches.
+
+    Matched on the host, not a substring of the whole URL — the page URL and
+    other vendors' calls routinely carry `adsafeprotected.com` inside a query
+    parameter, and reading those as IAS would report a tag nobody implemented.
+    """
+
+    PUB = re.compile(r"[?&#]pubEntityId=(\d+)")
+    RFW = re.compile(r"/rfw/st/\d+/(\d+)/")
+
+    def __init__(self):
+        super().__init__("IAS", id_label="pubEntityId", kinds={})
+
+    def classify(self, url):
+        host = urlsplit(url).netloc.lower().split(":")[0]
+        if not (host == "adsafeprotected.com" or host.endswith(".adsafeprotected.com")):
+            return None, None
+        m = self.PUB.search(url) or self.RFW.search(url)
+        return MEASUREMENT, (m.group(1) if m else "present")
+
+
+VENDORS = [ADFORM, CM360, AbtShield(), DoubleVerify(), IAS()]
 
 SERVING_VENDORS = {"Adform", "CM360"}
 

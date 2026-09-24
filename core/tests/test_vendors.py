@@ -223,3 +223,37 @@ def test_a_wrapped_click_still_names_its_campaign():
 def test_an_unwrapped_click_is_unaffected():
     assert vendors.classify("https://track.adform.net/C/?bn=90194589;gdpr=1") \
         == [("Adform", vendors.CLICK, "90194589")]
+
+
+# ── IAS ──────────────────────────────────────────────────────────────────
+# Shapes from a BNP Paribas trafficking sheet and a live dziennik.pl capture
+# (2026-09-24), where the IAS script fired beside CM360 placement 457786509.
+
+def test_ias_script_names_its_placement():
+    assert vendors.classify(
+        "https://staticjs.adsafeprotected.com/fw.js?advEntityId=3088332&pubEntityId=96486869"
+    ) == [("IAS", vendors.MEASUREMENT, "96486869")]
+
+
+def test_ias_noscript_pixel_names_its_placement():
+    """The noscript pixel carries the id in the path, not the query."""
+    assert vendors.classify(
+        "https://pixel.adsafeprotected.com/rfw/st/3088332/96486868/skeleton.gif?gdpr=1"
+    ) == [("IAS", vendors.MEASUREMENT, "96486868")]
+
+
+def test_ias_call_without_an_id_is_still_ias():
+    assert vendors.classify("https://dt.adsafeprotected.com/dt?anId=1") \
+        == [("IAS", vendors.MEASUREMENT, "present")]
+
+
+def test_a_page_url_mentioning_ias_is_not_an_ias_tag():
+    """Analytics calls carry the page URL, and the page URL can carry anything.
+    Matching the substring would report an IAS tag nobody implemented."""
+    assert vendors.classify(
+        "https://www.google.com/ccm/collect?dl=https%3A%2F%2Fstaticjs.adsafeprotected.com%2Ffw.js"
+    ) == []
+
+
+def test_ias_is_measurement_not_serving():
+    assert "IAS" not in vendors.SERVING_VENDORS

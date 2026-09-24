@@ -129,6 +129,10 @@ def _run(target, browser, run_dir):
         "url": target["url"],
         "label": target.get("label", target["id"]),
         "expected_id": expected_id(target),
+        # The campaign's own ids, when the UI has a sheet. Only tells the
+        # capture when it may stop waiting; everything that fires is still
+        # recorded, and the verdict is still reached from the HAR.
+        "wait_for": [str(i) for i in (target.get("wait_for") or []) if i][:500],
     }
     # `overrides` is how the HTTP layer reaches into a run already in flight:
     # it carries the watch-mode stop signal, and silences the console
