@@ -8,7 +8,7 @@ finding. Every vendor here is therefore split by kind.
 """
 
 import re
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote
 
 # GAM's own library and ad-request endpoints live on this host. They are the
 # publisher's ad *infrastructure*, not a CM360 campaign beacon, and they fire
@@ -181,8 +181,14 @@ class IAS(Vendor):
     def __init__(self):
         super().__init__("IAS", id_label="pubEntityId", kinds={})
 
+    HOST = re.compile(r"^[a-z][a-z0-9+.-]*://([^/?#]*)", re.I)
+
     def classify(self, url):
-        host = urlsplit(url).netloc.lower().split(":")[0]
+        # Not urlsplit: it raises on a malformed netloc ("Invalid IPv6 URL" —
+        # dziennik.pl makes a request with brackets in the host), and a
+        # classifier that raises takes the whole capture down with it.
+        m = self.HOST.match(url or "")
+        host = (m.group(1) if m else "").lower().rsplit("@", 1)[-1].split(":")[0]
         if not (host == "adsafeprotected.com" or host.endswith(".adsafeprotected.com")):
             return None, None
         m = self.PUB.search(url) or self.RFW.search(url)
@@ -199,7 +205,12 @@ def classify(url):
     practice, but the list keeps callers simple."""
     out = []
     for v in VENDORS:
-        kind, ident = v.classify(url)
+        # One malformed URL out of the ~700 a portal page makes must never cost
+        # the run: it is read as "not this vendor" and the capture carries on.
+        try:
+            kind, ident = v.classify(url)
+        except Exception:
+            continue
         if kind:
             out.append((v.name, kind, ident))
     return out

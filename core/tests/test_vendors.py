@@ -257,3 +257,18 @@ def test_a_page_url_mentioning_ias_is_not_an_ias_tag():
 
 def test_ias_is_measurement_not_serving():
     assert "IAS" not in vendors.SERVING_VENDORS
+
+
+def test_a_malformed_url_does_not_raise():
+    """Recorded on dziennik.pl: a request with brackets in the host made
+    urlsplit raise "Invalid IPv6 URL", and that took the whole capture down."""
+    assert vendors.classify("https://[not-an-ip]/pixel?x=1") == []
+    assert vendors.classify("https://staticjs.adsafeprotected.com]/fw.js?pubEntityId=1") == []
+
+
+def test_one_vendor_raising_does_not_hide_the_others(monkeypatch):
+    def boom(url):
+        raise ValueError("broken rule")
+    monkeypatch.setattr(vendors.VENDORS[-1], "classify", boom)
+    assert vendors.classify("https://track.adform.net/C/?bn=90194589") \
+        == [("Adform", vendors.CLICK, "90194589")]
