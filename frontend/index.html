@@ -1202,6 +1202,7 @@ function onFile(file) {
 function reportRows() {
   const out = [];
   const idx = sheetIndex();
+  const haveSheet = Object.keys(idx).length > 0;
   const picked = state.selectedVendors && state.selectedVendors.size
     ? v => state.selectedVendors.has(v) : () => true;
   state.testTargets.forEach(t => {
@@ -1242,28 +1243,59 @@ function reportRows() {
       fields.forEach(f => (r.vendors[vendor][f] || []).forEach(v => {
         ((((idx[vendor] || {})[f] || {})[v] || []).length ? inSheet : foreign).push(v);
       }));
+      // Impression and click belong to an ID, not to a vendor. Crediting the
+      // vendor let another advertiser's CM360 click on the same page tick this
+      // placement's click — a pass for a click nobody made on our creative.
+      const mine = inSheet.length ? inSheet : ids;
+      const impIds = new Set((k.impression || []).map(String));
+      const clkIds = new Set((k.click || []).map(String));
+      const impOn = mine.some(i => impIds.has(String(i)));
+      const clkOn = mine.some(i => clkIds.has(String(i)));
+      const clickedElsewhere = !clkOn && clkIds.size > 0;
+      const problems = [];
+      // "In the sheet" is the whole question the match exists to answer, so a
+      // serving tag the sheet does not book can never read as OK — however
+      // cleanly its impression and click fired.
+      if (haveSheet && !measurement && !inSheet.length) problems.push("not in the sheet");
+      const booked = inSheet.flatMap(i => fields.flatMap(f =>
+        (((idx[vendor] || {})[f] || {})[i] || []).map(g => g.nameHint && g.nameHint.size)))
+        .filter(Boolean);
+      if (!measurement && t.size && booked.length && !booked.includes(t.size)) {
+        problems.push("SIZE MISMATCH — email says " + t.size + ", sheet books " + [...new Set(booked)].join(" / "));
+      }
+      if (measurementPerPlacement(vendor) && inSheet.length && servingRowsOf(r).size
+          && !sheet.some(n => servingRowsOf(r).has(n))) {
+        problems.push(vendor + " tag belongs to a different placement than the serving tag");
+      }
       out.push({
         publisher: sheet.map(publisherOf).find(Boolean) || "—",
         test: t.desc || targetLabel(t),
         url: t.url,
         vendor, measurement,
-        ids: (inSheet.length ? inSheet : ids).join(", "),
+        ids: mine.join(", "),
         others: inSheet.length ? [...new Set(foreign)].join(", ") : "",
         sheet: sheet.join("; ")
                || (FIXED_ID_VENDORS.includes(vendor) ? "n/a — fixed order id" : "not in sheet"),
-        imp: measurement ? "seen" : (k.impression ? "yes" : "no"),
+        imp: measurement ? "seen" : (impOn ? "yes" : "no"),
         clk: measurement ? "n/a"
-             : k.click ? "yes"
+             : clkOn ? "yes"
+             : clickedElsewhere ? "not tested — the click landed on another advertiser"
              : r.click_attempted === false ? "not tested"
              : "no",
+        problems,
       });
     });
   });
   return out;
 }
 
+function isOk(r) {
+  return !r.missing && !r.measurement && !(r.problems || []).length
+         && r.imp === "yes" && r.clk === "yes";
+}
+
 function reportText(rows) {
-  const ok = rows.filter(r => r.imp === "yes" && r.clk === "yes").length;
+  const ok = rows.filter(isOk).length;
   const empty = rows.filter(r => r.missing).length;
   const lines = [
     `Tag verification — ${state.testTargets.length} test page(s), ${rows.filter(r => !r.missing).length} tag(s) observed`,
@@ -1271,8 +1303,11 @@ function reportText(rows) {
     "",
   ];
   rows.forEach(r => {
-    const mark = r.missing ? "!!" : r.measurement ? "•" : (r.imp === "yes" && r.clk === "yes") ? "OK"
-               : r.clk === "not tested" ? "??" : "!!";
+    const mark = r.missing ? "!!"
+               : (r.problems || []).length ? "!!"
+               : r.measurement ? "•"
+               : isOk(r) ? "OK"
+               : String(r.clk).startsWith("not tested") ? "??" : "!!";
     lines.push(`${mark}  ${r.publisher !== "—" ? r.publisher + " · " : ""}${r.test}`);
     lines.push(`    ${r.url}`);
     if (r.missing) {
@@ -1283,10 +1318,11 @@ function reportText(rows) {
     lines.push(`    ${r.vendor}  ${r.ids}`);
     lines.push(`    placement: ${r.sheet}`);
     lines.push(r.measurement ? `    seen` : `    impression: ${r.imp}   click: ${r.clk}`);
+    (r.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
     if (r.others) lines.push(`    also on the page, not this campaign: ${r.others}`);
     lines.push("");
   });
-  if (rows.some(r => r.clk === "not tested")) {
+  if (rows.some(r => String(r.clk).startsWith("not tested"))) {
     lines.push("\"not tested\" means the check could not click the creative — it is not");
     lines.push("evidence that the click tag is missing.");
   }
@@ -1301,7 +1337,8 @@ function reportHtml(rows) {
     // Red is reserved for something that did not fire. A click nobody managed
     // to attempt is unknown, not failed — colouring it like a defect is how a
     // correct placement gets raised with a publisher.
-    const failed = r.missing || (!r.measurement && (r.imp === "no" || r.clk === "no"));
+    const failed = r.missing || (r.problems || []).length
+                   || (!r.measurement && (r.imp === "no" || r.clk === "no"));
     const unknown = !r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed;
     const tint = failed ? "background:#f8e9e7;" : unknown ? "background:#f6efdd;" : "";
     return `<tr>
@@ -1310,7 +1347,8 @@ function reportHtml(rows) {
         <span style="font-size:11px;color:#666;">${escapeHtml(r.url)}</span></td>
       <td style="${cell}${tint}">${escapeHtml(r.missing ? "—" : r.vendor + " " + r.ids)}${r.others
         ? `<br><span style="font-size:11px;color:#666;">also on page: ${escapeHtml(r.others)}</span>` : ""}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}${(r.problems || []).map(p =>
+        `<br><b style="color:#a33;">${escapeHtml(p)}</b>`).join("")}</td>
       <td style="${cell}${tint}">${escapeHtml(r.measurement ? "seen" : r.imp)}</td>
       <td style="${cell}${tint}">${escapeHtml(r.measurement ? "n/a" : r.clk)}</td>
     </tr>`;
@@ -1640,6 +1678,16 @@ function runScan(only) {
 // Measurement vendors whose id is booked per placement, and so can be checked
 // against the placement the serving tag fired for. ABT is the opposite case:
 // one fixed order id for the whole account.
+// Sheet rows the serving vendors matched on one scanned page.
+function servingRowsOf(r) {
+  const idx = sheetIndex();
+  const rows = new Set();
+  MAIN_VENDORS.forEach(v => (MATCH_FIELDS[v] || []).forEach(f =>
+    (((r.vendors || {})[v] || {})[f] || []).forEach(val =>
+      ((((idx[v] || {})[f] || {})[val]) || []).forEach(g => g.rowName && rows.add(g.rowName)))));
+  return rows;
+}
+
 function measurementPerPlacement(v) {
   return VENDOR_ROLE[v] === "measurement" && !FIXED_ID_VENDORS.includes(v)
          && (MATCH_FIELDS[v] || []).length > 0;
@@ -1846,10 +1894,21 @@ function renderVendors() {
 // "Unassigned" rather than being guessed at.
 function publisherOf(rowName) {
   if (!rowName) return null;
-  const m = String(rowName).match(/^\s*([A-Za-z0-9.\- ]{2,30}?)[_\s]+(direct|native|programmatic|rtb)/i);
+  const n = String(rowName);
+  // The CM360 placement convention: i<campaign>n<version>_<Publisher>_<format>.
+  // Without it a BNP row "Banner_300x250-…-i22392n5_Infor_Banner_300x250_…"
+  // was filed under the publisher "Banner".
+  const cm = n.match(/(?:^|[-_\s])i\d{3,}n\d+_([A-Za-z0-9.]{2,30})_/);
+  if (cm) return cm[1];
+  const m = n.match(/^\s*([A-Za-z0-9.\- ]{2,30}?)[_\s]+(direct|native|programmatic|rtb)/i);
   if (m) return m[1].trim();
-  const first = String(rowName).trim().split(/[_\s]/)[0];
-  return first && /[a-z]/i.test(first) ? first : null;
+  const first = n.trim().split(/[_\s]/)[0];
+  // A format word or a campaign code is not a publisher; no name beats a wrong one.
+  if (!first || !/[a-z]/i.test(first)
+      || /^(banner|display|dis|video|native|rectangle|billboard)$/i.test(first)
+      || /^\d+x\d+/i.test(first)
+      || /^i\d+n\d+$/i.test(first)) return null;
+  return first;
 }
 
 function sheetIndex() {
@@ -2017,6 +2076,13 @@ function renderMatch() {
         : unknown ? '<span class="kind unknown">?</span>'
         : '<span class="kind off">✗</span>';
 
+      // ✓ only for an ID that is this campaign's — see reportRows.
+      const oursIds = checks.filter(c => c.cls === "ok" || c.note.startsWith("SIZE MISMATCH"))
+                            .map(c => String(c.val));
+      const credited = kind => {
+        const fired = (k[kind] || []).map(String);
+        return oursIds.length ? oursIds.some(i => fired.includes(i)) : fired.length > 0;
+      };
       const publisher = sheetRows.map(publisherOf).find(Boolean) || targetPublisher;
       return { publisher, html: `<tr class="${bad ? "row-bad" : ""}">
           <td>
@@ -2027,9 +2093,10 @@ function renderMatch() {
           <td class="m-ids">${checks.map(c => escapeHtml(c.f + "=" + c.val)).join("<br>") || "—"}</td>
           <td class="m-sheet">${sheetRows.length ? sheetRows.map(escapeHtml).join("<br>") : "—"}</td>
           <td class="m-kind">${measurement ? '<span class="kind on">seen</span>'
-                                : mark(k.impression, !knowsKinds)}</td>
+                                : mark(credited("impression"), !knowsKinds)}</td>
           <td class="m-kind">${measurement ? "—"
-                                : mark(k.click, !knowsKinds || r.click_attempted === false)}</td>
+                                : mark(credited("click"), !knowsKinds || r.click_attempted === false
+                                       || (!credited("click") && (k.click || []).length > 0))}</td>
           <td><span class="status-pill ${pill}">${escapeHtml(pillText)}</span>
             ${checks.filter(c => c.cls === "bad").map(c =>
               `<div class="match-detail bad">${escapeHtml(c.note)}</div>`).join("")}
