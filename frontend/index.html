@@ -1329,38 +1329,79 @@ function isOk(r) {
 }
 
 function reportText(rows) {
-  const ok = rows.filter(isOk).length;
-  const empty = rows.filter(r => r.missing).length;
-  const lines = [
-    `Tag verification — ${state.testTargets.length} test page(s), ${rows.filter(r => !r.missing).length} tag(s) observed`,
-    `${ok} with both impression and click confirmed`
-      + (empty ? `, ${empty} page(s) with nothing to report` : "")
-      // The count above is the serving tags. A measurement tag that is booked
-      // and missing is a problem too, and a header that said "10 confirmed"
-      // over two PolskaPress rows with no working IAS would read as all clear.
-      + (rows.filter(r => (r.problems || []).length).length
-          ? `, ${rows.filter(r => (r.problems || []).length).length} row(s) with a problem` : ""),
-    "",
-  ];
+  // One block per test. The measurement tags booked for the same placement
+  // (IAS) are lines inside that block rather than blocks of their own: a
+  // report is read test by test, and splitting a test into a CM360 block and an
+  // IAS block doubled its length and made the two halves easy to read apart.
+  const groups = [];
+  const byKey = new Map();
   rows.forEach(r => {
-    const mark = r.missing ? "!!"
-               : (r.problems || []).length ? "!!"
-               : r.measurement ? "•"
-               : isOk(r) ? "OK"
-               : String(r.clk).startsWith("not tested") ? "??" : "!!";
-    lines.push(`${mark}  ${r.publisher !== "—" ? r.publisher + " · " : ""}${r.test}`);
-    lines.push(`    ${r.url}`);
-    if (r.missing) {
-      lines.push(`    ${r.sheet === "—" ? "no tags fired" : r.sheet}`);
-      lines.push("");
+    const k = r.url + "|" + r.test;
+    if (!byKey.has(k)) { const g = { serving: [], meas: [] }; byKey.set(k, g); groups.push(g); }
+    (r.measurement ? byKey.get(k).meas : byKey.get(k).serving).push(r);
+  });
+
+  const serving = rows.filter(r => !r.measurement && !r.missing);
+  const ok = serving.filter(r => r.imp === "yes" && r.clk === "yes" && !(r.problems || []).length).length;
+  const empty = rows.filter(r => r.missing).length;
+  const meas = rows.filter(r => r.measurement);
+  const seen = meas.filter(r => r.imp === "seen").length;
+  const lines = [
+    `Tag verification — ${state.testTargets.length} test page(s), ${serving.length} tag(s) observed`,
+    `${ok} with both impression and click confirmed`
+      + (empty ? `, ${empty} page(s) with nothing to report` : ""),
+  ];
+  if (meas.length) {
+    // The line a reader needs when a measurement tag is booked: how many are
+    // there and how many are not. Without it two missing IAS tags sat quietly
+    // under "10 confirmed".
+    lines.push(`${meas[0].vendor}: seen on ${seen} of ${meas.length}`
+      + (seen < meas.length ? `, not seen on ${meas.length - seen}` : ""));
+  }
+  lines.push("");
+
+  const measLines = (m, out) => {
+    const tag = m.vendor + "  " + m.ids;
+    out.push(`    ${tag} — ${m.imp}`);
+    (m.problems || []).forEach(p => out.push(`    PROBLEM: ${p}`));
+    if (m.others) out.push(`    also on the page, not this campaign: ${m.others}`);
+  };
+
+  groups.forEach(g => {
+    const anyMeasProblem = g.meas.some(m => (m.problems || []).length);
+    if (!g.serving.length) {
+      // Nothing from the serving vendors to hang them on: show them as they are.
+      g.meas.forEach(m => {
+        lines.push(`${(m.problems || []).length ? "!!" : "•"}  ${m.publisher !== "—" ? m.publisher + " · " : ""}${m.test}`);
+        lines.push(`    ${m.url}`);
+        lines.push(`    ${m.vendor}  ${m.ids}`);
+        lines.push(`    placement: ${m.sheet}`);
+        lines.push(`    ${m.imp}`);
+        (m.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
+        lines.push("");
+      });
       return;
     }
-    lines.push(`    ${r.vendor}  ${r.ids}`);
-    lines.push(`    placement: ${r.sheet}`);
-    lines.push(r.measurement ? `    ${r.imp}` : `    impression: ${r.imp}   click: ${r.clk}`);
-    (r.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
-    if (r.others) lines.push(`    also on the page, not this campaign: ${r.others}`);
-    lines.push("");
+    g.serving.forEach(r => {
+      const mark = r.missing ? "!!"
+                 : (r.problems || []).length || anyMeasProblem ? "!!"
+                 : isOk(r) ? "OK"
+                 : String(r.clk).startsWith("not tested") ? "??" : "!!";
+      lines.push(`${mark}  ${r.publisher !== "—" ? r.publisher + " · " : ""}${r.test}`);
+      lines.push(`    ${r.url}`);
+      if (r.missing) {
+        lines.push(`    ${r.sheet === "—" ? "no tags fired" : r.sheet}`);
+        lines.push("");
+        return;
+      }
+      lines.push(`    ${r.vendor}  ${r.ids}`);
+      lines.push(`    placement: ${r.sheet}`);
+      lines.push(`    impression: ${r.imp}   click: ${r.clk}`);
+      (r.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
+      if (r.others) lines.push(`    also on the page, not this campaign: ${r.others}`);
+      g.meas.forEach(m => measLines(m, lines));
+      lines.push("");
+    });
   });
   if (rows.some(r => String(r.clk).startsWith("not tested"))) {
     lines.push("\"not tested\" means the check could not click the creative — it is not");
