@@ -84,3 +84,74 @@ def test_an_unreadable_har_is_not_a_crash(tmp_path):
     p = tmp_path / "run.har"
     p.write_text("{ truncated", encoding="utf-8")
     assert findings.markup_defects(p) == []
+
+
+# ── diagnose: the identified reason, in words ───────────────────────────
+
+def _meta(*events, error=None):
+    return {"events": list(events), "error": error}
+
+
+def test_a_creative_that_was_never_served_says_so():
+    out = findings.diagnose(_meta(
+        "this campaign's impression NOT seen within 90s (waited for 20 sheet ids)",
+        "click skipped: none of this campaign's creatives appeared, so there was nothing of ours to click"))
+    assert out == ["the campaign's creative was never served within 90s"]
+
+
+def test_a_missing_click_is_not_listed_as_a_second_problem_when_nothing_was_served():
+    out = findings.diagnose(_meta(
+        "an impression NOT seen within 45s",
+        "model could not locate the creative",
+        "click skipped: no clickable creative frame found"))
+    assert out == ["the campaign's creative was never served within 45s"]
+
+
+def test_a_click_that_tracked_nothing_is_named():
+    out = findings.diagnose(_meta("this campaign's impression seen within 100s",
+                                  "clicked (model) but no click beacon followed"))
+    assert out == ["the creative was clicked but no click beacon followed"]
+
+
+def test_a_click_on_another_advertiser_is_named():
+    out = findings.diagnose(_meta(
+        "click tracked for a DIFFERENT id (425907911) — not this campaign; the slot is carrying another advertiser"))
+    assert out == ["the click landed on another advertiser's creative"]
+
+
+def test_a_late_load_is_named_with_its_limit():
+    out = findings.diagnose(_meta("page did not finish loading within 60s — carrying on with what has loaded"))
+    assert out == ["the page took longer than 60s to finish loading"]
+
+
+def test_a_failed_run_gives_its_error():
+    out = findings.diagnose(_meta(error="ValueError: boom\nCall log:\n  - x"))
+    assert out == ["the run stopped with an error: ValueError: boom"]
+
+
+def test_a_clean_run_has_nothing_to_diagnose():
+    assert findings.diagnose(_meta("this campaign's impression seen within 100s",
+                                   "click confirmed by beacon 1 (frame)")) == []
+
+
+def test_a_bot_check_wall_is_found_in_the_har(tmp_path):
+    har = tmp_path / "run.har"
+    har.write_text(json.dumps({"log": {"entries": [
+        {"request": {"url": "https://pub.example/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=1"},
+         "response": {"status": 200, "content": {}}}]}}), encoding="utf-8")
+    assert findings.diagnose(_meta(), har_path=har)[0].startswith("the page served a bot-check wall")
+
+
+def test_an_ordinary_page_is_not_a_bot_check(tmp_path):
+    har = tmp_path / "run.har"
+    har.write_text(json.dumps({"log": {"entries": [
+        {"request": {"url": "https://pub.example/article"},
+         "response": {"status": 200, "content": {}}}]}}), encoding="utf-8")
+    assert findings.diagnose(_meta(), har_path=har) == []
+
+
+def test_nothing_to_click_and_nothing_found_is_one_cause_not_two():
+    out = findings.diagnose(_meta("this campaign's impression seen within 100s",
+                                  "model could not locate the creative (looked through 5 screens)",
+                                  "click skipped: no clickable creative frame found"))
+    assert out == ["the vision check could not find the creative on screen"]

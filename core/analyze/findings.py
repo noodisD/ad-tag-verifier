@@ -154,6 +154,96 @@ def markup_defects(har_path):
     return out
 
 
+# ── why did it not happen? ──────────────────────────────────────────────
+
+# What the capture said about itself, turned into a cause. The capture already
+# logs the reason a step did not happen; this reads those lines (and one fact
+# from the HAR) back out as short statements a person can act on, so a report
+# can say "campaign creative never served" instead of leaving "no tag fired"
+# to be interpreted.
+_EVENT_CAUSES = [
+    (r"(?:this campaign's|an) impression NOT seen within (\d+)s",
+     "the campaign's creative was never served within {0}s"),
+    (r"video impression NOT seen within (\d+)s",
+     "the video spot never started within {0}s"),
+    (r"page did not finish loading within (\d+)s",
+     "the page took longer than {0}s to finish loading"),
+    (r"consent wall still up",
+     "the consent wall was not dismissed, so nothing served"),
+    (r"no overlay appeared in any navigation",
+     "the interstitial never appeared on any page visited"),
+    (r"click tracked for a DIFFERENT id",
+     "the click landed on another advertiser's creative"),
+    (r"click skipped: no clickable creative frame found",
+     "no clickable creative could be found on the page"),
+    (r"click skipped: no player on screen",
+     "no player on screen to click"),
+    (r"click skipped: creative off-screen",
+     "the creative stayed off-screen and could not be reached"),
+    (r"model could not locate the creative(?: \(looked through (\d+) screens\))?",
+     "the vision check could not find the creative on screen"),
+    (r"clicked \(\w+\) but no click beacon followed",
+     "the creative was clicked but no click beacon followed"),
+    (r"the player consumed the click",
+     "the video player took the click instead of the ad"),
+    (r"expected creative did not play; a different one did",
+     "a different spot played than the one under test"),
+]
+
+
+def bot_challenge(har_path=None, har=None):
+    """Did the page answer with a bot-check wall (Cloudflare) rather than
+    content? strefabiznesu.pl did, on the reload — and every check after that
+    ran against the wall, not the ad."""
+    if har is None:
+        try:
+            with open(har_path, encoding="utf-8") as f:
+                har = json.load(f)
+        except Exception:
+            return False
+    for e in har.get("log", {}).get("entries", []):
+        url = e.get("request", {}).get("url", "")
+        if "/cdn-cgi/challenge-platform/" in url and "orchestrate" in url:
+            return True
+        if "challenges.cloudflare.com/turnstile" in url:
+            return True
+    return False
+
+
+def diagnose(meta, har_path=None, har=None):
+    """-> [str]: the identified causes, most basic first.
+
+    Only what the evidence supports; an empty list means the run recorded no
+    reason, not that there was none.
+    """
+    out = []
+    if (har_path or har) and bot_challenge(har_path, har):
+        out.append("the page served a bot-check wall (Cloudflare) instead of content")
+    if meta.get("error"):
+        # The run itself stopped; the first line of the exception is the cause.
+        out.append("the run stopped with an error: "
+                   + str(meta["error"]).splitlines()[0][:100])
+    text = [str(e) for e in (meta.get("events") or [])]
+    for rx, tpl in _EVENT_CAUSES:
+        for line in text:
+            m = re.search(rx, line)
+            if m:
+                msg = tpl.format(*[g or "" for g in m.groups()])
+                if msg not in out:
+                    out.append(msg)
+                break
+    # Two ways of saying one thing: the deterministic search found nothing to
+    # click and then the vision check found nothing either.
+    if "the vision check could not find the creative on screen" in out:
+        out = [o for o in out if not o.startswith("no clickable creative could be found")]
+    # The creative was never served, so a missing click is a consequence and
+    # naming it as a second problem only adds noise.
+    if any("never served" in o or "never started" in o for o in out):
+        out = [o for o in out if not o.startswith(("no clickable creative", "the vision check",
+                                                    "the creative was clicked", "no player on screen"))]
+    return out
+
+
 def analyze(meta, expected_id=None, require_click=True, rederive=True):
     """Turn one artifact into a verdict.
 

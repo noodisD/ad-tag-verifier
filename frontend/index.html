@@ -1232,7 +1232,8 @@ function reportRows() {
     // A test the report leaves out reads as a test that passed. Pages where
     // nothing fired, runs that errored and pages never scanned all get a line.
     const base = { test: t.desc || targetLabel(t), url: t.url, measurement: false,
-                   publisher: "—", ids: "—", sheet: "—" };
+                   publisher: "—", ids: "—", sheet: "—",
+                   diag: (r && r.diagnosis) || [] };
     if (!r || r.status === "idle" || r.status === "pending" || r.status === "running") {
       out.push({ ...base, vendor: "—", imp: "not scanned", clk: "—", missing: true });
       return;
@@ -1298,6 +1299,7 @@ function reportRows() {
         test: t.desc || targetLabel(t),
         url: t.url,
         vendor, measurement,
+        diag: (r && r.diagnosis) || [],
         ids: mine.join(", "),
         others: inSheet.length ? [...new Set(foreign)].join(", ") : "",
         sheet: sheet.join("; ")
@@ -1353,15 +1355,23 @@ function reportBlocks(rows) {
       const label = MEAS_LABEL[v] || v;
       if (m && m.imp === "seen") return { label, value: "seen" };
       if (m) {
-        // Booked for this placement and not there. Say why only when the
-        // creative itself carried it broken — that is the one cause worth a word.
-        const broken = (m.problems || []).some(p => /doubled quotes/.test(p));
-        return { label, value: "not seen", why: broken ? "tag delivered malformed" : "" };
+        return { label, value: "not seen" };
       }
       return bookedByTheSheet(v) ? { label, value: "" } : { label, value: "not seen" };
     });
   });
   return groups;
+}
+
+// The identified causes for one test: what the sheet comparison found wrong
+// (not booked, wrong size, measurement tag on another placement or delivered
+// unloadable), and — when the impression or click did not come through — what
+// the run recorded about why. A test that came through whole lists nothing.
+function blockProblems(g, r) {
+  const out = [...(r.problems || [])];
+  g.meas.forEach(m => (m.problems || []).forEach(x => out.push(x)));
+  if (r.missing || r.imp !== "yes" || r.clk !== "yes") (r.diag || []).forEach(x => out.push(x));
+  return [...new Set(out)];
 }
 
 function reportText(rows) {
@@ -1378,7 +1388,7 @@ function reportText(rows) {
 
   groups.forEach(g => {
     const colText = g.cols.filter(c => c.value)
-      .map(c => `${c.label}: ${c.value}${c.why ? " (" + c.why + ")" : ""}`).join("   ");
+      .map(c => `${c.label}: ${c.value}`).join("   ");
     const anyMissing = g.cols.some(c => c.value === "not seen");
     if (!g.serving.length) {
       // Nothing from the serving vendors to hang the columns on.
@@ -1393,6 +1403,7 @@ function reportText(rows) {
       return;
     }
     g.serving.forEach(r => {
+      const probs = blockProblems(g, r);
       const mark = r.missing ? "!!"
                  : (r.problems || []).length || anyMissing ? "!!"
                  : isOk(r) ? "OK"
@@ -1401,13 +1412,14 @@ function reportText(rows) {
       lines.push(`    ${r.url}`);
       if (r.missing) {
         lines.push(`    ${r.sheet === "—" ? "no tags fired" : r.sheet}`);
+        probs.forEach(x => lines.push(`    problem: ${x}`));
         lines.push("");
         return;
       }
       lines.push(`    ${r.vendor}  ${r.ids}`);
       lines.push(`    placement: ${r.sheet}`);
       lines.push(`    impression: ${r.imp}   click: ${r.clk}` + (colText ? "   " + colText : ""));
-      (r.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
+      probs.forEach(x => lines.push(`    problem: ${x}`));
       if (r.others) lines.push(`    also on the page, not this campaign: ${r.others}`);
       lines.push("");
     });
@@ -1423,7 +1435,7 @@ function reportHtml(rows) {
   const groups = reportBlocks(rows);
   const labels = groups.length ? groups[0].cols.map(c => c.label) : [];
   const cell = "padding:6px 10px;border:1px solid #ccc;font-size:13px;";
-  const head = ["Publisher", "Test", "ID", "Placement", "Impression", "Click"].concat(labels)
+  const head = ["Publisher", "Test", "ID", "Placement", "Impression", "Click"].concat(labels, ["Problem"])
     .map(h => `<th style="${cell}background:#333;color:#fff;text-align:left;">${escapeHtml(h)}</th>`).join("");
   const body = groups.flatMap(g => {
     const serving = g.serving.length ? g.serving : g.meas;
@@ -1438,17 +1450,19 @@ function reportHtml(rows) {
       const tint = failed ? "background:#f8e9e7;" : unknown ? "background:#f6efdd;" : "";
       const colCells = g.cols.map(c =>
         `<td style="${cell}${tint}${c.value === "not seen" ? "color:#a33;font-weight:bold;" : ""}">${
-          escapeHtml(c.value ? c.value + (c.why ? " (" + c.why + ")" : "") : "—")}</td>`).join("");
+          escapeHtml(c.value || "—")}</td>`).join("");
+      const probs = g.serving.length ? blockProblems(g, r) : [];
+      const probCell = `<td style="${cell}${tint}${probs.length ? "color:#a33;" : ""}">${
+        probs.length ? probs.map(escapeHtml).join("<br>") : "—"}</td>`;
       return `<tr>
       <td style="${cell}${tint}">${escapeHtml(r.publisher)}</td>
       <td style="${cell}${tint}"><b>${escapeHtml(r.test)}</b><br>
         <span style="font-size:11px;color:#666;">${escapeHtml(r.url)}</span></td>
       <td style="${cell}${tint}">${escapeHtml(r.missing ? "—" : r.vendor + " " + r.ids)}${r.others
         ? `<br><span style="font-size:11px;color:#666;">also on page: ${escapeHtml(r.others)}</span>` : ""}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}${(r.problems || []).map(p =>
-        `<br><b style="color:#a33;">${escapeHtml(p)}</b>`).join("")}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}</td>
       <td style="${cell}${tint}">${escapeHtml(r.imp)}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.measurement ? "n/a" : r.clk)}</td>${colCells}
+      <td style="${cell}${tint}">${escapeHtml(r.measurement ? "n/a" : r.clk)}</td>${colCells}${probCell}
     </tr>`;
     });
   }).join("");

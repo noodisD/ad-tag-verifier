@@ -233,12 +233,18 @@ def discover(browser, target, run_dir):
         defects = [d for d in findings.markup_defects(har)
                    if (d["vendor"], d["id"]) not in fired_ids]
 
+    # Why a step did not happen, in words: read from what the capture logged
+    # and from the HAR, so the report can name the cause instead of leaving
+    # "no tag fired" to be interpreted.
+    diagnosis = findings.diagnose(meta, har_path=har if har.exists() else None)
+
     status = "error" if meta.get("error") else ("done" if found else "none")
     return {
         "status": status,
         "vendors": found,
         "kinds": kinds,
         "markup_defects": defects,
+        "diagnosis": diagnosis,
         "click_attempted": _click_attempted(meta),
         "click_result": meta.get("click_result"),
         "vendors_in_markup": in_markup,
