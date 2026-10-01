@@ -24,6 +24,26 @@ def _log(meta, msg):
     meta["events"].append(msg)
 
 
+def _goto(page, url, meta, timeout=60000):
+    """Navigate, and carry on if the load event is late.
+
+    A heavy portal can take longer than a minute to fire `load` while every ad
+    on it has long since been requested. Raising there threw away the run:
+    on kobieta.gazeta.pl one of six identical Pepco tests came back as
+    "TimeoutError: Page.goto" with no result at all, although the page was up
+    and the HAR was recording. Whatever has loaded is evidence; the wait that
+    follows decides whether it is enough. Only a timeout is tolerated — a
+    refused connection or a bad certificate still raises.
+    """
+    try:
+        page.goto(url, wait_until="load", timeout=timeout)
+    except Exception as e:
+        if type(e).__name__ != "TimeoutError":
+            raise
+        _log(meta, f"page did not finish loading within {timeout // 1000}s — "
+                   "carrying on with what has loaded")
+
+
 def _scroll(page, settings):
     """Lazy-loaded slots need the viewport to move past them."""
     for i in range(settings.get("scroll_passes", 6)):
@@ -118,7 +138,11 @@ def _creative_frame(recorder, page, expected_id=None):
 
 
 CLICK_HREF_HINTS = ("track.adform.net/C/", "adclick.g.doubleclick.net",
-                    "ad.doubleclick.net/ddm/trackclk", "/ddm/clk")
+                    "ad.doubleclick.net/ddm/trackclk", "/ddm/clk",
+                    # clickonometrics' own preview serves the banner as a plain
+                    # <img> inside <a href=".../click/<bn>/previewclick.html">,
+                    # in the main document, with no iframe at all.
+                    "clickonometrics.pl/campaign=")
 
 
 def _clickthrough_element(page):
@@ -127,8 +151,25 @@ def _clickthrough_element(page):
         try:
             handle = fr.evaluate_handle(
                 """(hints) => {
-                    const as = Array.from(document.querySelectorAll('a[href]'));
-                    return as.find(a => hints.some(h => a.href.includes(h))) || null;
+                    const as = Array.from(document.querySelectorAll('a[href]'))
+                        .filter(a => hints.some(h => a.href.includes(h)));
+                    // The anchor is not always the thing with a size: a link
+                    // wrapping a block-level <img> can measure 160x17 while the
+                    // 160x600 banner inside it is what a person clicks. Take
+                    // the largest visible piece of the link.
+                    let best = null, bestArea = 0;
+                    for (const a of as) {
+                        const parts = [a].concat(Array.from(
+                            a.querySelectorAll('img, picture, canvas, video, svg')));
+                        for (const e of parts) {
+                            const r = e.getBoundingClientRect();
+                            const area = r.width * r.height;
+                            if (r.width >= 30 && r.height >= 20 && area > bestArea) {
+                                best = e; bestArea = area;
+                            }
+                        }
+                    }
+                    return best;
                 }""",
                 list(CLICK_HREF_HINTS))
             el = handle.as_element()
@@ -349,6 +390,10 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
     _confirm_click(recorder, meta, expected_id, since, source="frame")
 
 
+# How many screens of a page the vision fallback is willing to look through.
+MAX_SCREENS = 5
+
+
 def _ask_where(page, settings, meta, expected_id):
     """Let a model point at the creative. -> box in viewport coordinates."""
     eye = settings.get("vision")
@@ -360,18 +405,47 @@ def _ask_where(page, settings, meta, expected_id):
         _log(meta, "vision fallback unavailable: "
                    + ("no advertiser named" if not advertiser else "no model configured"))
         return None
+    # The model sees one screenshot, which is one screen of the page. A 160x600
+    # skyscraper in a sidebar sits well below the first screen, so on the BNP
+    # DigitalContact previews four banners that fire and click perfectly were
+    # reported "not tested" because the model was never shown them. Look screen
+    # by screen, and leave the page scrolled where the creative was found:
+    # the click that follows is in viewport coordinates.
+    vp = settings["viewport"]
+    step = max(int(vp["height"] * 0.85), 200)
     try:
-        shot = page.screenshot(type="png")
+        total = page.evaluate("document.documentElement.scrollHeight") or 0
+        start = page.evaluate("window.scrollY") or 0
     except Exception:
-        return None
-    box = creative_click.locate(eye, shot, advertiser, settings["viewport"])
-    if not box:
-        _log(meta, "model could not locate the creative")
-        return None
-    _log(meta, f"model located creative at ({box['x']:.0f},{box['y']:.0f}) "
-               f"{box['w']:.0f}x{box['h']:.0f} conf={box['confidence']}"
-               + (f" — {box['reason'][:70]}" if box.get("reason") else ""))
-    return box
+        total, start = 0, 0
+    offsets = [start]
+    y = start
+    while len(offsets) < MAX_SCREENS and y + step < total - vp["height"] * 0.25:
+        y += step
+        offsets.append(y)
+
+    for n, off in enumerate(offsets):
+        try:
+            if n:
+                page.evaluate("(y) => window.scrollTo(0, y)", off)
+                time.sleep(0.8)
+            shot = page.screenshot(type="png")
+        except Exception:
+            return None
+        box = creative_click.locate(eye, shot, advertiser, vp)
+        if box:
+            _log(meta, f"model located creative at ({box['x']:.0f},{box['y']:.0f}) "
+                       f"{box['w']:.0f}x{box['h']:.0f} conf={box['confidence']}"
+                       + (f" on screen {n + 1} of {len(offsets)}" if n else "")
+                       + (f" — {box['reason'][:70]}" if box.get("reason") else ""))
+            return box
+    try:
+        page.evaluate("(y) => window.scrollTo(0, y)", start)
+    except Exception:
+        pass
+    _log(meta, "model could not locate the creative"
+               + (f" (looked through {len(offsets)} screens)" if len(offsets) > 1 else ""))
+    return None
 
 
 def _clicked_at(page, ctx, recorder, settings, meta, expected_id, cx, cy,
@@ -455,7 +529,7 @@ def _click_target_id(recorder, meta, target):
 
 def load(page, ctx, recorder, settings, meta, target):
     """Plain load. Correct for isolated creative previews."""
-    page.goto(target["url"], wait_until="load", timeout=60000)
+    _goto(page, target["url"], meta)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
@@ -463,6 +537,11 @@ def load(page, ctx, recorder, settings, meta, target):
     aim, go = _click_target_id(recorder, meta, target)
     if go:
         _click_creative(page, ctx, recorder, settings, meta, aim)
+
+
+# How long the first load of a preview gets to serve the campaign before the
+# page is reloaded. strefabiznesu.pl served at 7s.
+FIRST_LOAD_GRACE = 12
 
 
 def gam_preview(page, ctx, recorder, settings, meta, target):
@@ -473,14 +552,29 @@ def gam_preview(page, ctx, recorder, settings, meta, target):
     negative — the page was never in the state being tested.
     """
     url = target["url"]
-    page.goto(url, wait_until="load", timeout=60000)
+    _goto(page, url, meta)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
     _log(meta, "first load (sets preview cookie)")
-    time.sleep(2)
 
-    page.goto(url, wait_until="load", timeout=60000)
-    _log(meta, "second load (renders creative)")
-    consent.accept(page, 1.5)
+    # A preview link that carries its own token often serves on the first load.
+    # Reloading such a page is not free: strefabiznesu.pl rendered the BNP
+    # creative on the first load (CM360 impression at 7s) and answered the
+    # reload with a Cloudflare "are you human" challenge, so the click and the
+    # IAS check ran against a bot wall instead of the ad. When the sheet says
+    # which IDs are ours and one has already fired, the reload has nothing to add.
+    ours = {str(i) for i in (target.get("wait_for") or []) if i}
+    if target.get("expected_id"):
+        ours.add(str(target["expected_id"]))
+    served = bool(ours) and recorder.wait_for(
+        lambda: any(recorder.has(kind=vendors.IMPRESSION, ident=i) for i in ours),
+        FIRST_LOAD_GRACE, settings.get("poll_interval", 0.5))
+    if served:
+        _log(meta, "campaign creative already served on the first load — not reloading")
+    else:
+        time.sleep(2)
+        _goto(page, url, meta)
+        _log(meta, "second load (renders creative)")
+        consent.accept(page, 1.5)
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
                          target.get("wait_for"))
@@ -539,7 +633,7 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
     clicks. So this clicks real links until the overlay fires.
     """
     url = target["url"]
-    page.goto(url, wait_until="load", timeout=60000)
+    _goto(page, url, meta)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
     time.sleep(3)
 
@@ -662,7 +756,7 @@ def watch(page, ctx, recorder, settings, meta, target):
     correctly in seconds; the value this tool adds is capturing the evidence,
     not the clicking.
     """
-    page.goto(target["url"], wait_until="load", timeout=60000)
+    _goto(page, target["url"], meta)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
 
     budget = settings.get("watch_timeout", 300)
@@ -849,7 +943,7 @@ def video(page, ctx, recorder, settings, meta, target):
     `track.adform.net/C/?bn=`.
     """
     expected_id = target.get("expected_id")
-    page.goto(target["url"], wait_until="load", timeout=60000)
+    _goto(page, target["url"], meta)
     _keep_active(page)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
     if consent.still_up(page):
