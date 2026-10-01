@@ -576,7 +576,14 @@ function unwrapUrlDefense(url) {
 function truncatedUrlReason(url) {
   if (/[…]/.test(url)) return "ends with an ellipsis — the link was shortened before it was copied";
   if (/%[0-9a-f]?$/i.test(url)) return "ends mid-percent-escape — the link is cut off";
-  if (/[?&][^=&]+$/.test(url)) return "ends with a parameter name and no value — the link is cut off";
+  // A trailing bare name means "cut off after the name" only in a link that
+  // otherwise spells its parameters key=value. Filmweb's screening preview is
+  // `?smartPreview280920264&noIntro&noSponsor` — bare flags all the way — and
+  // this rule threw both Filmweb tests out as "truncated", so they never ran.
+  const tail = url.match(/[?&][^=&]+$/);
+  if (tail && /=/.test(url.slice(0, url.length - tail[0].length))) {
+    return "ends with a parameter name and no value — the link is cut off";
+  }
   return null;
 }
 
@@ -733,6 +740,12 @@ const PREVIEW_MARKERS = [
   "preview_cookie",        // GAM's own cookie-setting preview link
   "adocean.pl",            // TVN and others hand out adocean readredir links
   "/gampad/preview",
+  // Filmweb's screening preview is a bare key in the query string
+  // (`/?smartPreview280920265&noIntro`), and HybridAI's is an app route
+  // (`app.deaz.io/preview?ad=…`). Neither looked like a preview, so four of the
+  // 26 Pepco tests were dropped before the scan began and the report said
+  // "22 test pages" without a word about the other four.
+  "smartpreview", "deaz.io/preview",
 ];
 
 // What the email called a test, cleaned of what pasting left behind. A link
