@@ -45,9 +45,12 @@ profiles:
     # at 96.9s. A 60s budget reports "no tags" on a page that is fine.
     # And a `?version=` preview does not force the creative on first load: on
     # a BNP Paribas test the slot served something else at 15s and the
-    # campaign's CM360 + IAS arrived on the slot's refresh at 147s. 200s covers
-    # one refresh; a scan with the sheet loaded stops as soon as ours appears.
-    patience: 200
+    # campaign's CM360 + IAS arrived on the slot's refresh at 147s. On the full
+    # 14-page run it came later still — on cbm-gory and cbd-gory the campaign's
+    # 457786509 fired just after a 200s wait had given up. 260s; a scan with
+    # the sheet loaded stops as soon as ours appears, so only pages where it
+    # never comes pay for the extra minute.
+    patience: 260
     scroll_passes: 8
 
   - name: wp

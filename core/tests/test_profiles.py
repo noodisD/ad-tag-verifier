@@ -171,3 +171,39 @@ class TestWaitingForTheCampaign:
     def test_without_a_sheet_any_impression_still_counts(self):
         ok, _ = self._wait({("impression", "457198692")})
         assert ok is True
+
+
+class TestAimingTheClick:
+    """In a scan the click goes after the campaign's own creative, or nowhere."""
+
+    class _Rec:
+        def __init__(self, beacons):
+            self.beacons = beacons
+
+    def _aim(self, beacons, **target):
+        from core.capture import strategies
+        meta = {"events": []}
+        aim, go = strategies._click_target_id(self._Rec(beacons), meta, target)
+        return aim, go, meta["events"]
+
+    def test_aims_at_the_campaign_id_that_fired(self):
+        fired = [{"kind": "impression", "evidence": "fired", "id": "428251046"},
+                 {"kind": "impression", "evidence": "fired", "id": "457786509"}]
+        aim, go, _ = self._aim(fired, wait_for=["457786509", "457783530"])
+        assert (aim, go) == ("457786509", True)
+
+    def test_does_not_click_when_none_of_ours_appeared(self):
+        """Recorded on dziennik.pl cbd-gory: the click hit a slot before the
+        campaign's creative arrived and the report said "click: no"."""
+        fired = [{"kind": "impression", "evidence": "fired", "id": "428251046"}]
+        aim, go, events = self._aim(fired, wait_for=["457786509"])
+        assert go is False
+        assert "nothing of ours to click" in events[-1]
+
+    def test_an_explicit_expected_id_wins(self):
+        aim, go, _ = self._aim([], expected_id="90116857", wait_for=["1"])
+        assert (aim, go) == ("90116857", True)
+
+    def test_without_a_sheet_nothing_changes(self):
+        aim, go, _ = self._aim([])
+        assert (aim, go) == (None, True)

@@ -426,6 +426,31 @@ def _confirm_click(recorder, meta, expected_id, since, source):
         _log(meta, f"clicked ({source}) but no click beacon followed")
 
 
+def _click_target_id(recorder, meta, target):
+    """Which ID the click should go after, and whether to click at all.
+
+    -> (expected_id, go). With an expected ID there is nothing to decide. With
+    only the sheet's IDs (a scan), aim at whichever of them actually fired:
+    that is the creative on screen, and it is the ID the click beacon has to
+    carry. When none of them fired there is no campaign creative to click, so
+    the honest answer is "not tested" rather than a click on whatever frame is
+    there — recorded on dziennik.pl, where such a click landed on an empty slot
+    and the report read "click: no" against a click tag nobody had tried.
+    """
+    if target.get("expected_id"):
+        return target["expected_id"], True
+    ids = [str(i) for i in (target.get("wait_for") or []) if i]
+    if not ids:
+        return None, True                  # no sheet: behave as before
+    for b in recorder.beacons:
+        if (b.get("kind") == vendors.IMPRESSION and b.get("evidence") == "fired"
+                and str(b.get("id")) in ids):
+            return str(b["id"]), True
+    _log(meta, "click skipped: none of this campaign's creatives appeared, "
+               "so there was nothing of ours to click")
+    return None, False
+
+
 # ── strategies ────────────────────────────────────────────────────────────
 
 def load(page, ctx, recorder, settings, meta, target):
@@ -435,7 +460,9 @@ def load(page, ctx, recorder, settings, meta, target):
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
                          target.get("wait_for"))
-    _click_creative(page, ctx, recorder, settings, meta, target.get("expected_id"))
+    aim, go = _click_target_id(recorder, meta, target)
+    if go:
+        _click_creative(page, ctx, recorder, settings, meta, aim)
 
 
 def gam_preview(page, ctx, recorder, settings, meta, target):
@@ -457,7 +484,9 @@ def gam_preview(page, ctx, recorder, settings, meta, target):
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
                          target.get("wait_for"))
-    _click_creative(page, ctx, recorder, settings, meta, target.get("expected_id"))
+    aim, go = _click_target_id(recorder, meta, target)
+    if go:
+        _click_creative(page, ctx, recorder, settings, meta, aim)
 
 
 def _click_link(page, loc, meta):
