@@ -205,3 +205,41 @@ def test_a_refused_connection_still_fails():
             raise RuntimeError("net::ERR_CONNECTION_REFUSED")
     with pytest.raises(RuntimeError):
         strategies._goto(Refused(), "https://pub.example/", {"events": []})
+
+
+# ── navigation_click judges the campaign, not the first advertiser ────────
+
+class _Beacons:
+    def __init__(self, *fired):
+        self.beacons = [{"kind": "impression", "evidence": "fired", "id": i} for i in fired]
+
+    def has(self, kind=None, ident=None, vendor=None, fired_only=True):
+        return any(b["kind"] == kind and (ident is None or b["id"] == ident) for b in self.beacons)
+
+
+def test_a_foreign_impression_is_not_the_campaigns():
+    """On a portal carrying several interstitials the loop used to stop at the
+    first impression of anyone."""
+    rec = _Beacons("428251046")
+    assert strategies._campaign_fired(rec, None, {"457781885"}) is False
+    assert strategies._campaign_fired(_Beacons("457781885"), None, {"457781885"}) is True
+
+
+def test_with_an_explicit_id_that_id_decides():
+    assert strategies._campaign_fired(_Beacons("1"), "2", {"1"}) is False
+    assert strategies._campaign_fired(_Beacons("2"), "2", set()) is True
+
+
+def test_without_a_sheet_any_impression_still_counts():
+    assert strategies._campaign_fired(_Beacons("9"), None, set()) is True
+    assert strategies._campaign_fired(_Beacons(), None, set()) is False
+
+
+def test_the_click_is_judged_against_the_id_that_fired():
+    """Recorded on kobieta.wp.pl: the click tracked placement 457781885, the
+    sheet's own, and was reported "unattributed" because the run had been
+    given no single id to expect."""
+    rec = _Beacons("428251046", "457781885")
+    assert strategies._aim_id(rec, None, {"457781885", "457781882"}) == "457781885"
+    assert strategies._aim_id(rec, "7", {"457781885"}) == "7"
+    assert strategies._aim_id(_Beacons("1"), None, {"457781885"}) is None

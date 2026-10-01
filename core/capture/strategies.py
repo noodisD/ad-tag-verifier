@@ -500,6 +500,32 @@ def _confirm_click(recorder, meta, expected_id, since, source):
         _log(meta, f"clicked ({source}) but no click beacon followed")
 
 
+def _campaign_fired(recorder, expected, ids):
+    """Has this campaign's impression fired — not just anybody's?
+
+    With an expected id that is the whole question. In a scan there is only the
+    sheet's set of ids, and any one of them counts. With neither (no sheet),
+    any impression does, as it always did.
+    """
+    if expected:
+        return recorder.has(kind=vendors.IMPRESSION, ident=expected)
+    if ids:
+        return any(recorder.has(kind=vendors.IMPRESSION, ident=i) for i in ids)
+    return recorder.has(kind=vendors.IMPRESSION)
+
+
+def _aim_id(recorder, expected, ids):
+    """The id a click should be judged against: the explicit one, else
+    whichever of the sheet's ids actually fired, else none."""
+    if expected:
+        return expected
+    for b in recorder.beacons:
+        if (b.get("kind") == vendors.IMPRESSION and b.get("evidence") == "fired"
+                and str(b.get("id")) in ids):
+            return str(b["id"])
+    return None
+
+
 def _click_target_id(recorder, meta, target):
     """Which ID the click should go after, and whether to click at all.
 
@@ -679,6 +705,12 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
     _log(meta, f"{len(links)} candidate article links")
 
     expected = target.get("expected_id")
+    # In a scan there is no single expected id, only the sheet's. Without this
+    # the loop below stopped at the first impression of anyone — on a portal
+    # carrying other advertisers' interstitials that ends the search before the
+    # campaign's own has had a chance — and the click was judged against
+    # nothing, so a click that tracked the right placement read "unattributed".
+    ids = {str(i) for i in (target.get("wait_for") or []) if i}
     budget = settings["patience"]
     per_click = max(12, budget // max(1, settings.get("max_link_clicks", 8)))
 
@@ -686,7 +718,7 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
         if not consent.alive(page):
             _log(meta, "page closed — stopping")
             break
-        if recorder.has(kind=vendors.IMPRESSION, ident=expected):
+        if _campaign_fired(recorder, expected, ids):
             break
         _log(meta, f"[{i}] navigating via link click -> {href[:90]}")
         try:
@@ -709,7 +741,8 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
             except Exception as e:
                 _log(meta, f"    overlay click failed: {str(e)[:60]}")
             time.sleep(2)
-            _confirm_click(recorder, meta, expected, since, source="overlay")
+            _confirm_click(recorder, meta, _aim_id(recorder, expected, ids), since,
+                           source="overlay")
             if meta.get("click_result") == "confirmed":
                 _log(meta, "    overlay fired")
                 return
@@ -720,7 +753,7 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
             pass
         consent.accept(page, 1.5)
         got = recorder.wait_for(
-            lambda: recorder.has(kind=vendors.IMPRESSION, ident=expected),
+            lambda: _campaign_fired(recorder, expected, ids),
             per_click, settings.get("poll_interval", 0.5))
         if got:
             _log(meta, "    overlay fired")
@@ -732,8 +765,9 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
             # Aim at the overlay itself first: it covers the viewport and the
             # usual targeting has nothing to grip on here. Fall back to the
             # normal path only if that produced no click for this campaign.
-            if not _click_overlay(page, ctx, recorder, settings, meta, expected):
-                _click_creative(page, ctx, recorder, settings, meta, expected)
+            aim = _aim_id(recorder, expected, ids)
+            if not _click_overlay(page, ctx, recorder, settings, meta, aim):
+                _click_creative(page, ctx, recorder, settings, meta, aim)
             return
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
