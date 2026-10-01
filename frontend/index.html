@@ -1328,11 +1328,15 @@ function isOk(r) {
          && r.imp === "yes" && r.clk === "yes";
 }
 
-function reportText(rows) {
-  // One block per test. The measurement tags booked for the same placement
-  // (IAS) are lines inside that block rather than blocks of their own: a
-  // report is read test by test, and splitting a test into a CM360 block and an
-  // IAS block doubled its length and made the two halves easy to read apart.
+// Short names for the measurement columns.
+const MEAS_LABEL = { "IAS": "IAS", "ABT Shield": "ABT", "DoubleVerify": "DV" };
+
+// One record per test: the serving row(s) and, for each measurement vendor in
+// use on this run, a seen / not seen value. A vendor counts as "in use" if it
+// appeared on any test; on a test where it is absent that is "not seen" unless
+// the sheet is loaded and does not book it for that placement, in which case
+// there is nothing to expect and the cell is left empty.
+function reportBlocks(rows) {
   const groups = [];
   const byKey = new Map();
   rows.forEach(r => {
@@ -1340,51 +1344,57 @@ function reportText(rows) {
     if (!byKey.has(k)) { const g = { serving: [], meas: [] }; byKey.set(k, g); groups.push(g); }
     (r.measurement ? byKey.get(k).meas : byKey.get(k).serving).push(r);
   });
+  const used = [];
+  rows.filter(r => r.measurement).forEach(r => { if (!used.includes(r.vendor)) used.push(r.vendor); });
 
+  groups.forEach(g => {
+    g.cols = used.map(v => {
+      const m = g.meas.find(x => x.vendor === v);
+      const label = MEAS_LABEL[v] || v;
+      if (m && m.imp === "seen") return { label, value: "seen" };
+      if (m) {
+        // Booked for this placement and not there. Say why only when the
+        // creative itself carried it broken — that is the one cause worth a word.
+        const broken = (m.problems || []).some(p => /doubled quotes/.test(p));
+        return { label, value: "not seen", why: broken ? "tag delivered malformed" : "" };
+      }
+      return bookedByTheSheet(v) ? { label, value: "" } : { label, value: "not seen" };
+    });
+  });
+  return groups;
+}
+
+function reportText(rows) {
+  const groups = reportBlocks(rows);
   const serving = rows.filter(r => !r.measurement && !r.missing);
   const ok = serving.filter(r => r.imp === "yes" && r.clk === "yes" && !(r.problems || []).length).length;
   const empty = rows.filter(r => r.missing).length;
-  const meas = rows.filter(r => r.measurement);
-  const seen = meas.filter(r => r.imp === "seen").length;
   const lines = [
     `Tag verification — ${state.testTargets.length} test page(s), ${serving.length} tag(s) observed`,
     `${ok} with both impression and click confirmed`
       + (empty ? `, ${empty} page(s) with nothing to report` : ""),
+    "",
   ];
-  if (meas.length) {
-    // The line a reader needs when a measurement tag is booked: how many are
-    // there and how many are not. Without it two missing IAS tags sat quietly
-    // under "10 confirmed".
-    lines.push(`${meas[0].vendor}: seen on ${seen} of ${meas.length}`
-      + (seen < meas.length ? `, not seen on ${meas.length - seen}` : ""));
-  }
-  lines.push("");
-
-  const measLines = (m, out) => {
-    const tag = m.vendor + "  " + m.ids;
-    out.push(`    ${tag} — ${m.imp}`);
-    (m.problems || []).forEach(p => out.push(`    PROBLEM: ${p}`));
-    if (m.others) out.push(`    also on the page, not this campaign: ${m.others}`);
-  };
 
   groups.forEach(g => {
-    const anyMeasProblem = g.meas.some(m => (m.problems || []).length);
+    const colText = g.cols.filter(c => c.value)
+      .map(c => `${c.label}: ${c.value}${c.why ? " (" + c.why + ")" : ""}`).join("   ");
+    const anyMissing = g.cols.some(c => c.value === "not seen");
     if (!g.serving.length) {
-      // Nothing from the serving vendors to hang them on: show them as they are.
+      // Nothing from the serving vendors to hang the columns on.
       g.meas.forEach(m => {
         lines.push(`${(m.problems || []).length ? "!!" : "•"}  ${m.publisher !== "—" ? m.publisher + " · " : ""}${m.test}`);
         lines.push(`    ${m.url}`);
         lines.push(`    ${m.vendor}  ${m.ids}`);
         lines.push(`    placement: ${m.sheet}`);
         lines.push(`    ${m.imp}`);
-        (m.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
         lines.push("");
       });
       return;
     }
     g.serving.forEach(r => {
       const mark = r.missing ? "!!"
-                 : (r.problems || []).length || anyMeasProblem ? "!!"
+                 : (r.problems || []).length || anyMissing ? "!!"
                  : isOk(r) ? "OK"
                  : String(r.clk).startsWith("not tested") ? "??" : "!!";
       lines.push(`${mark}  ${r.publisher !== "—" ? r.publisher + " · " : ""}${r.test}`);
@@ -1396,10 +1406,9 @@ function reportText(rows) {
       }
       lines.push(`    ${r.vendor}  ${r.ids}`);
       lines.push(`    placement: ${r.sheet}`);
-      lines.push(`    impression: ${r.imp}   click: ${r.clk}`);
+      lines.push(`    impression: ${r.imp}   click: ${r.clk}` + (colText ? "   " + colText : ""));
       (r.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
       if (r.others) lines.push(`    also on the page, not this campaign: ${r.others}`);
-      g.meas.forEach(m => measLines(m, lines));
       lines.push("");
     });
   });
@@ -1411,18 +1420,26 @@ function reportText(rows) {
 }
 
 function reportHtml(rows) {
+  const groups = reportBlocks(rows);
+  const labels = groups.length ? groups[0].cols.map(c => c.label) : [];
   const cell = "padding:6px 10px;border:1px solid #ccc;font-size:13px;";
-  const head = ["Publisher", "Test", "ID", "Placement", "Impression", "Click"]
+  const head = ["Publisher", "Test", "ID", "Placement", "Impression", "Click"].concat(labels)
     .map(h => `<th style="${cell}background:#333;color:#fff;text-align:left;">${escapeHtml(h)}</th>`).join("");
-  const body = rows.map(r => {
-    // Red is reserved for something that did not fire. A click nobody managed
-    // to attempt is unknown, not failed — colouring it like a defect is how a
-    // correct placement gets raised with a publisher.
-    const failed = r.missing || (r.problems || []).length
-                   || (!r.measurement && (r.imp === "no" || r.clk === "no"));
-    const unknown = !r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed;
-    const tint = failed ? "background:#f8e9e7;" : unknown ? "background:#f6efdd;" : "";
-    return `<tr>
+  const body = groups.flatMap(g => {
+    const serving = g.serving.length ? g.serving : g.meas;
+    return serving.map(r => {
+      // Red is reserved for something that did not fire. A click nobody managed
+      // to attempt is unknown, not failed — colouring it like a defect is how a
+      // correct placement gets raised with a publisher.
+      const colMissing = g.cols.some(c => c.value === "not seen");
+      const failed = r.missing || (r.problems || []).length || colMissing
+                     || (!r.measurement && (r.imp === "no" || r.clk === "no"));
+      const unknown = !r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed;
+      const tint = failed ? "background:#f8e9e7;" : unknown ? "background:#f6efdd;" : "";
+      const colCells = g.cols.map(c =>
+        `<td style="${cell}${tint}${c.value === "not seen" ? "color:#a33;font-weight:bold;" : ""}">${
+          escapeHtml(c.value ? c.value + (c.why ? " (" + c.why + ")" : "") : "—")}</td>`).join("");
+      return `<tr>
       <td style="${cell}${tint}">${escapeHtml(r.publisher)}</td>
       <td style="${cell}${tint}"><b>${escapeHtml(r.test)}</b><br>
         <span style="font-size:11px;color:#666;">${escapeHtml(r.url)}</span></td>
@@ -1431,8 +1448,9 @@ function reportHtml(rows) {
       <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}${(r.problems || []).map(p =>
         `<br><b style="color:#a33;">${escapeHtml(p)}</b>`).join("")}</td>
       <td style="${cell}${tint}">${escapeHtml(r.imp)}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.measurement ? "n/a" : r.clk)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.measurement ? "n/a" : r.clk)}</td>${colCells}
     </tr>`;
+    });
   }).join("");
   return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;">
     <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
