@@ -298,6 +298,7 @@
      like a tag that fired. */
   .chip-found.markup { background: transparent; color: var(--color-neutral-600);
                        border: 1px dashed var(--color-neutral-400); }
+  .chip-found.markup.bad { color: #a33; border: 1px solid #a33; font-weight: 600; }
   .match-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .match-table th { text-align: left; padding: var(--space-2) var(--space-3);
                     font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
@@ -740,7 +741,8 @@ const PREVIEW_MARKERS = [
 // all that is left is the link's own text, there is no name — the label built
 // from size and variant says it better.
 function describe(text) {
-  const t = (text || "").replace(/\[([^\]]*)\]\(\s*\)/g, "$1").replace(/\s+/g, " ").trim();
+  const t = (text || "").replace(/\[([^\]]*)\]\(\s*\)/g, "$1").replace(/\s+/g, " ").trim()
+    .replace(/:$/, "");
   if (!t || /^(www\.|https?:\/\/)\S+$/i.test(t)) return "";
   return t.slice(0, 90);
 }
@@ -770,6 +772,13 @@ function previewVariant(url) {
   const m = url.match(/[?&]creName=([^&#]+)/i) || url.match(/[?&]wfName=([^&#]+)/i);
   let raw = "preview";
   if (m) { try { raw = decodeURIComponent(m[1]); } catch (e) { raw = m[1]; } }
+  else {
+    // Ad Manager previews carry no name, only the creative they show. Two of
+    // them for one line item were both "preview" — indistinguishable in the
+    // report, and the report is what gets sent to the publisher.
+    const c = url.match(/[?&]creativeId=(\d+)/i);
+    if (c) raw = "creative-" + c[1];
+  }
   return raw.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 44)
          || "preview";
 }
@@ -1241,6 +1250,10 @@ function reportRows() {
       const fields = MATCH_FIELDS[vendor] || Object.keys(r.vendors[vendor]);
       const inSheet = [], foreign = [];
       fields.forEach(f => (r.vendors[vendor][f] || []).forEach(v => {
+        // "present" is how a vendor call that carries no id is recorded (IAS's
+        // plain skeleton pixel). It names nobody, so it is not "another
+        // advertiser on the page".
+        if (v === "present") return;
         ((((idx[vendor] || {})[f] || {})[v] || []).length ? inSheet : foreign).push(v);
       }));
       // Impression and click belong to an ID, not to a vendor. Crediting the
@@ -1285,6 +1298,14 @@ function reportRows() {
         problems,
       });
     });
+    missingMeasurement(r).forEach(m => out.push({
+      ...base,
+      publisher: [...m.rows].map(publisherOf).find(Boolean) || "—",
+      vendor: m.vendor, measurement: true, ids: m.ids.join(", "),
+      sheet: m.rows.join("; "),
+      imp: "not seen", clk: "n/a",
+      problems: [missingText(m)],
+    }));
   });
   return out;
 }
@@ -1299,7 +1320,13 @@ function reportText(rows) {
   const empty = rows.filter(r => r.missing).length;
   const lines = [
     `Tag verification — ${state.testTargets.length} test page(s), ${rows.filter(r => !r.missing).length} tag(s) observed`,
-    `${ok} with both impression and click confirmed` + (empty ? `, ${empty} page(s) with nothing to report` : ""),
+    `${ok} with both impression and click confirmed`
+      + (empty ? `, ${empty} page(s) with nothing to report` : "")
+      // The count above is the serving tags. A measurement tag that is booked
+      // and missing is a problem too, and a header that said "10 confirmed"
+      // over two PolskaPress rows with no working IAS would read as all clear.
+      + (rows.filter(r => (r.problems || []).length).length
+          ? `, ${rows.filter(r => (r.problems || []).length).length} row(s) with a problem` : ""),
     "",
   ];
   rows.forEach(r => {
@@ -1317,7 +1344,7 @@ function reportText(rows) {
     }
     lines.push(`    ${r.vendor}  ${r.ids}`);
     lines.push(`    placement: ${r.sheet}`);
-    lines.push(r.measurement ? `    seen` : `    impression: ${r.imp}   click: ${r.clk}`);
+    lines.push(r.measurement ? `    ${r.imp}` : `    impression: ${r.imp}   click: ${r.clk}`);
     (r.problems || []).forEach(p => lines.push(`    PROBLEM: ${p}`));
     if (r.others) lines.push(`    also on the page, not this campaign: ${r.others}`);
     lines.push("");
@@ -1349,7 +1376,7 @@ function reportHtml(rows) {
         ? `<br><span style="font-size:11px;color:#666;">also on page: ${escapeHtml(r.others)}</span>` : ""}</td>
       <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}${(r.problems || []).map(p =>
         `<br><b style="color:#a33;">${escapeHtml(p)}</b>`).join("")}</td>
-      <td style="${cell}${tint}">${escapeHtml(r.measurement ? "seen" : r.imp)}</td>
+      <td style="${cell}${tint}">${escapeHtml(r.imp)}</td>
       <td style="${cell}${tint}">${escapeHtml(r.measurement ? "n/a" : r.clk)}</td>
     </tr>`;
   }).join("");
@@ -1652,7 +1679,12 @@ function runScan(only) {
           // not a hardcoded vendor list.
           if (!state.vendorTouched) {
             discoveredVendors().forEach(v => {
-              if (MAIN_VENDORS.includes(v)) state.selectedVendors.add(v);
+              // The serving vendors, and anything the sheet books for these
+              // placements. IAS is booked per placement on the BNP sheets and
+              // was left out of the report entirely because it had to be
+              // ticked by hand — a measurement tag that is expected but not
+              // shown is exactly the thing a report must not go quiet about.
+              if (MAIN_VENDORS.includes(v) || bookedByTheSheet(v)) state.selectedVendors.add(v);
             });
           }
           redraw();
@@ -1678,6 +1710,52 @@ function runScan(only) {
 // Measurement vendors whose id is booked per placement, and so can be checked
 // against the placement the serving tag fired for. ABT is the opposite case:
 // one fixed order id for the whole account.
+// Does the loaded sheet book any tag of this vendor?
+function bookedByTheSheet(v) {
+  return Object.keys(sheetIndex()[v] || {}).length > 0;
+}
+
+// Is this vendor part of the check? Serving vendors and sheet-booked ones are,
+// unless the person has explicitly unticked it in step 2. The picker only
+// offers vendors that fired, so one that never appeared cannot be unticked —
+// and its absence is the finding.
+function wantVendor(v) {
+  const offered = discoveredVendors().includes(v);
+  if (offered && state.vendorTouched) return state.selectedVendors.has(v);
+  return MAIN_VENDORS.includes(v) || bookedByTheSheet(v);
+}
+
+// Per-placement measurement tags (IAS) the sheet books for the placements a
+// page served, with what became of them. -> [{vendor, ids, rows, defect}]
+// Only when none of the booked ids fired; if one did, the tag is there.
+function missingMeasurement(r) {
+  const out = [];
+  if (!r || !r.vendors) return out;
+  const served = servingRowsOf(r);
+  if (!served.size) return out;
+  Object.keys(MATCH_FIELDS).filter(measurementPerPlacement).forEach(v => {
+    if (!wantVendor(v)) return;
+    const groups = state.groups.filter(g => g.platform === v && g.fromSheet && served.has(g.rowName));
+    if (!groups.length) return;
+    const booked = [...new Set(groups.flatMap(g => Object.values(g.expected || {})).map(String))];
+    const fired = new Set(Object.values((r.vendors || {})[v] || {}).flat().map(String));
+    if (booked.some(i => fired.has(i))) return;
+    out.push({
+      vendor: v, ids: booked,
+      rows: [...new Set(groups.map(g => g.rowName))],
+      // The creative carried the tag but delivered it unloadable.
+      defect: (r.markup_defects || []).filter(d => d.vendor === v && booked.includes(String(d.id))),
+    });
+  });
+  return out;
+}
+
+function missingText(m) {
+  return m.defect.length
+    ? m.vendor + " tag is in the creative but delivered with doubled quotes, so its script address is empty and it never loads"
+    : m.vendor + " is booked for this placement and was not seen";
+}
+
 // Sheet rows the serving vendors matched on one scanned page.
 function servingRowsOf(r) {
   const idx = sheetIndex();
@@ -1851,7 +1929,11 @@ function renderScan() {
              + escapeHtml(v) + marks + `</span>`;
     }).join("") : "";
     const inMarkup = Object.keys(r.vendors_in_markup || {}).map(v =>
-      `<span class="chip-found markup" title="in the page source but never requested — often another advertiser's tag">${escapeHtml(v)} · markup only</span>`).join("");
+      `<span class="chip-found markup" title="in the page source but never requested — often another advertiser's tag">${escapeHtml(v)} · markup only</span>`).join("")
+      // Delivered and unloadable is a different thing from "never requested",
+      // and a defect, so it is not drawn in the neutral dashed style.
+      + [...new Set((r.markup_defects || []).filter(d => d.tag === "script").map(d => d.vendor))].map(v =>
+        `<span class="chip-found markup bad" title="the tag is in the creative with its attribute wrapped in doubled quotes, so its address is empty and the browser never requests it">${escapeHtml(v)} · tag malformed</span>`).join("");
     const detail = r.status === "error" && r.detail
       ? `<div class="match-detail">${escapeHtml(r.detail)}</div>` : "";
     const isWatch = state.watchIds.includes(t.tid);
@@ -1966,7 +2048,7 @@ function renderMatch() {
       });
     });
 
-    return vendors.map(vendor => {
+    const perVendor = vendors.map(vendor => {
       const found = r.vendors[vendor];
       const label = `${targetLabel(t)} · ${vendor}`;
       if (!found) {
@@ -2103,6 +2185,18 @@ function renderMatch() {
           </td>
         </tr>` };
     });
+    // Booked for these placements and not there: the rows that were missing
+    // from the report altogether when IAS had to be ticked by hand.
+    const absent = missingMeasurement(r).map(m => ({ publisher: targetPublisher, html: `<tr class="row-bad">
+          <td><div class="m-desc">${escapeHtml(t.desc || targetLabel(t))}</div>
+            <a class="m-url" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.url.slice(0, 78))}</a></td>
+          <td class="m-ids">${escapeHtml(m.ids.join(", "))}</td>
+          <td class="m-sheet">${m.rows.map(escapeHtml).join("<br>")}</td>
+          <td class="m-kind" colspan="2">${m.defect.length ? "malformed" : "not seen"}</td>
+          <td><span class="status-pill fail">${escapeHtml(m.vendor)} ${m.defect.length ? "never loads" : "not seen"}</span>
+            <div class="match-detail bad">${escapeHtml(missingText(m))}</div></td>
+        </tr>` }));
+    return perVendor.concat(absent);
   }).flat().filter(Boolean);
 
   // Grouped by publisher: that is how the campaign is bought, and how a
