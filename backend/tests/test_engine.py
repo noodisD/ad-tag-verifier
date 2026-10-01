@@ -102,3 +102,47 @@ def test_the_campaigns_ids_reach_the_capture(monkeypatch, tmp_path):
     engine.discover(None, {"id": "t0", "url": "https://www.dziennik.pl/?version=cbm-gory",
                            "wait_for": ["457786509", 457783524, None, ""]}, tmp_path)
     assert seen["wait_for"] == ["457786509", "457783524"]
+
+
+def _fake_capture_with(tmp_path, har_entries, beacons=()):
+    import json
+
+    def fake_capture(job, browser, run_dir, viewport="desktop", overrides=None):
+        d = tmp_path / job["id"]
+        d.mkdir(exist_ok=True)
+        (d / "meta.json").write_text(json.dumps({
+            "id": job["id"], "url": job["url"], "events": [], "har": "run.har",
+            "beacons": list(beacons)}), encoding="utf-8")
+        (d / "run.har").write_text(json.dumps({"log": {"entries": har_entries}}), encoding="utf-8")
+        return {}
+    return fake_capture
+
+
+_BROKEN_IAS = ('<SCRIPT TYPE=""application/javascript"" '
+               'SRC=""https://staticjs.adsafeprotected.com/fw.js?advEntityId=1&pubEntityId=1000002""></SCRIPT>')
+
+
+def _entry(url, body=None):
+    content = {"mimeType": "text/html", "text": body} if body else {"mimeType": "text/html"}
+    return {"startedDateTime": "2026-10-01T10:00:00.000Z", "request": {"url": url},
+            "response": {"status": 200, "content": content}}
+
+
+def test_a_tag_delivered_but_unloadable_is_reported(monkeypatch, tmp_path):
+    """The scan used to say only "IAS did not fire" for a creative that carried
+    the tag with doubled quotes — which sends the publisher looking for a tag
+    nobody placed instead of one placed wrongly."""
+    monkeypatch.setattr(engine.session, "capture", _fake_capture_with(
+        tmp_path, [_entry("https://ads.example/creative", _BROKEN_IAS)]))
+    out = engine.discover(None, {"id": "t0", "url": "https://pub.example/"}, tmp_path)
+    assert [(d["vendor"], d["id"]) for d in out["markup_defects"] if d["tag"] == "script"] \
+        == [("IAS", "1000002")]
+
+
+def test_a_defect_is_dropped_when_that_tag_did_fire(monkeypatch, tmp_path):
+    """If the request went out, the markup was fine in practice."""
+    fired = _entry("https://staticjs.adsafeprotected.com/fw.js?advEntityId=1&pubEntityId=1000002")
+    monkeypatch.setattr(engine.session, "capture", _fake_capture_with(
+        tmp_path, [_entry("https://ads.example/creative", _BROKEN_IAS), fired]))
+    out = engine.discover(None, {"id": "t0", "url": "https://pub.example/"}, tmp_path)
+    assert [d for d in out["markup_defects"] if d["tag"] == "script"] == []

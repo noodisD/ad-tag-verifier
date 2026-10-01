@@ -6,8 +6,11 @@ been — the fix is re-running this over stored HARs in a second, not re-driving
 twenty publisher pages for ten minutes and hoping the same ads serve again.
 """
 
+import base64
 import json
+import re
 from pathlib import Path
+from urllib.parse import unquote
 
 from core.analyze import vendors
 
@@ -65,6 +68,90 @@ def load_artifact(run_dir):
         meta = json.load(f)
     meta["_dir"] = str(run_dir)
     return meta
+
+
+# ── tags that are delivered but cannot load ──────────────────────────────
+
+# Hosts worth looking for. A response body is only searched when one of them
+# appears in it, so a 3 MB script bundle costs a substring test, not a regex.
+_TAG_HOSTS = ("adsafeprotected", "doubleclick.net/ddm", "adform.net",
+              "doubleverify", "abtshield")
+
+# <script src=""https://…""> — the attribute value wrapped in a second pair of
+# quotes. HTML reads `src=""` as an empty value and the address that follows as
+# a stray attribute name, so the element has no source and nothing is requested.
+_DOUBLED = re.compile(
+    r"<\s*(script|img|iframe)\b[^<>]*?\bsrc\s*=\s*\"\"\s*(https?://[^\"'\s<>]+?)\"\"",
+    re.IGNORECASE)
+
+
+def _readable(text):
+    """Undo the layers a creative can arrive in: percent-encoding (DV360's
+    preview page hands the markup over as an encoded JS string) and \\xNN
+    escapes."""
+    bs = chr(92)
+    # Any %XX, not just an encoded "<": the markup may arrive with its angle
+    # brackets already turned into \x3c first, leaving no %3C to key on.
+    if re.search(r"%[0-9A-Fa-f]{2}", text):
+        text = unquote(text)
+    if bs + "x" in text:
+        text = re.sub(re.escape(bs) + r"x([0-9a-fA-F]{2})",
+                      lambda m: chr(int(m.group(1), 16)), text)
+    return text.replace(bs + "/", "/")
+
+
+def markup_defects(har_path):
+    """Vendor tags present in delivered markup that the browser cannot load.
+
+    The commonest cause, seen twice in two days on different publishers: a tag
+    pasted into a creative with CSV-style escaping, so
+    `SRC="https://staticjs.adsafeprotected.com/fw.js?…"` arrives as
+    `SRC=""https://staticjs.adsafeprotected.com/fw.js?…""`. The script has no
+    address, no request is made, and the only symptom is a tag that never fires
+    — indistinguishable, from the traffic alone, from one nobody implemented.
+    The HAR holds the response bodies, so the cause can be read off directly.
+
+    -> [{"vendor", "kind", "id", "tag", "problem", "url"}], deduplicated.
+    Whether the tag *also* fired is the caller's to check against the beacons.
+    """
+    try:
+        with open(har_path, encoding="utf-8") as f:
+            har = json.load(f)
+    except Exception:
+        return []
+
+    out, seen = [], set()
+    for e in har.get("log", {}).get("entries", []):
+        content = e.get("response", {}).get("content", {}) or {}
+        mime = (content.get("mimeType") or "").lower()
+        if mime.startswith(("image/", "video/", "audio/", "font/")):
+            continue
+        text = content.get("text") or ""
+        if not text:
+            continue
+        if content.get("encoding") == "base64":
+            try:
+                text = base64.b64decode(text).decode("utf-8", "replace")
+            except Exception:
+                continue
+        low = text.lower()
+        if not any(h in low for h in _TAG_HOSTS):
+            continue
+        for m in _DOUBLED.finditer(_readable(text)):
+            tag, url = m.group(1).lower(), m.group(2)
+            for vendor, kind, ident in vendors.classify(url):
+                key = (vendor, ident, tag)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "vendor": vendor, "kind": kind, "id": ident, "tag": tag,
+                    "url": url[:200],
+                    "problem": "the tag is delivered with its attribute wrapped "
+                               "in doubled quotes, so its address is empty and "
+                               "the browser never requests it",
+                })
+    return out
 
 
 def analyze(meta, expected_id=None, require_click=True, rederive=True):

@@ -221,11 +221,24 @@ def discover(browser, target, run_dir):
         if b.get("id") and b["id"] not in bucket:
             bucket.append(b["id"])
 
+    # Tags the creative delivered but the browser could not load (an attribute
+    # wrapped in doubled quotes leaves a script with no address). Without this
+    # the page reads as "that tag never fired", which sends the publisher off to
+    # look for a tag nobody placed instead of one placed wrongly. Only those
+    # that really did not fire are reported.
+    defects = []
+    har = Path(meta.get("_dir", ".")) / meta.get("har", "run.har")
+    if har.exists():
+        fired_ids = {(b["vendor"], b["id"]) for b in fired}
+        defects = [d for d in findings.markup_defects(har)
+                   if (d["vendor"], d["id"]) not in fired_ids]
+
     status = "error" if meta.get("error") else ("done" if found else "none")
     return {
         "status": status,
         "vendors": found,
         "kinds": kinds,
+        "markup_defects": defects,
         "click_attempted": _click_attempted(meta),
         "click_result": meta.get("click_result"),
         "vendors_in_markup": in_markup,
