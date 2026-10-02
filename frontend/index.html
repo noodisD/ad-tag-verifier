@@ -1313,7 +1313,7 @@ function reportRows() {
         vendor, measurement,
         diag: (r && r.diagnosis) || [],
         ids: mine.join(", "),
-        others: inSheet.length ? [...new Set(foreign)].join(", ") : "",
+        others: inSheet.length && foreign.length ? vendor + " " + [...new Set(foreign)].join(", ") : "",
         sheet: sheet.join("; ")
                || (FIXED_ID_VENDORS.includes(vendor) ? "n/a — fixed order id" : "not in sheet"),
         imp: measurement ? "seen" : (impOn ? "yes" : "no"),

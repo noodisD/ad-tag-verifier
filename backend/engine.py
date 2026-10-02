@@ -253,12 +253,12 @@ def discover(browser, target, run_dir):
         carried = [(v, i) for v, k, i in findings.creative_tags(har, cid.group(1) if cid else None)
                    if v in vendors.SERVING_VENDORS and k == vendors.IMPRESSION and i not in wanted]
         if carried:
-            diagnosis = [d for d in diagnosis if "never served" not in d]
+            diagnosis = [d for d in diagnosis if not d.startswith(findings.NOTHING_FIRED)]
             diagnosis.insert(0, f"the previewed creative (creativeId {cid.group(1)}) carries "
                                 + ", ".join(f"{v} {i}" for v, i in carried[:3])
                                 + ", which the sheet does not book")
         elif serving_fired:
-            diagnosis = [d for d in diagnosis if "never served" not in d]
+            diagnosis = [d for d in diagnosis if not d.startswith(findings.NOTHING_FIRED)]
             diagnosis.insert(0, "tags fired on the page, but none this campaign books: "
                                 + ", ".join(f"{v} {i}" for v, i in serving_fired[:3]))
 

@@ -161,9 +161,16 @@ def markup_defects(har_path):
 # from the HAR) back out as short statements a person can act on, so a report
 # can say "campaign creative never served" instead of leaving "no tag fired"
 # to be interpreted.
+NOTHING_FIRED = ("none of the sheet's placements fired", "no impression fired")
+
 _EVENT_CAUSES = [
-    (r"(?:this campaign's|an) impression NOT seen within (\d+)s",
-     "the campaign's creative was never served within {0}s"),
+    # Worded as what was observed. "The creative was never served" claimed more
+    # than the HAR shows: on an OLX page the Pepco banner was on screen while
+    # none of the sheet's placements fired — it carried no tag the sheet books.
+    (r"this campaign's impression NOT seen within (\d+)s",
+     "none of the sheet's placements fired within {0}s"),
+    (r"an impression NOT seen within (\d+)s",
+     "no impression fired within {0}s"),
     (r"video impression NOT seen within (\d+)s",
      "the video spot never started within {0}s"),
     (r"page did not finish loading within (\d+)s",
@@ -238,7 +245,7 @@ def diagnose(meta, har_path=None, har=None):
         out = [o for o in out if not o.startswith("no clickable creative could be found")]
     # The creative was never served, so a missing click is a consequence and
     # naming it as a second problem only adds noise.
-    if any("never served" in o or "never started" in o for o in out):
+    if any(o.startswith(NOTHING_FIRED) or "never started" in o for o in out):
         out = [o for o in out if not o.startswith(("no clickable creative", "the vision check",
                                                     "the creative was clicked", "no player on screen"))]
     return out

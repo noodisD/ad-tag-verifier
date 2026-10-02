@@ -96,7 +96,7 @@ def test_a_creative_that_was_never_served_says_so():
     out = findings.diagnose(_meta(
         "this campaign's impression NOT seen within 90s (waited for 20 sheet ids)",
         "click skipped: none of this campaign's creatives appeared, so there was nothing of ours to click"))
-    assert out == ["the campaign's creative was never served within 90s"]
+    assert out == ["none of the sheet's placements fired within 90s"]
 
 
 def test_a_missing_click_is_not_listed_as_a_second_problem_when_nothing_was_served():
@@ -104,7 +104,7 @@ def test_a_missing_click_is_not_listed_as_a_second_problem_when_nothing_was_serv
         "an impression NOT seen within 45s",
         "model could not locate the creative",
         "click skipped: no clickable creative frame found"))
-    assert out == ["the campaign's creative was never served within 45s"]
+    assert out == ["no impression fired within 45s"]
 
 
 def test_a_click_that_tracked_nothing_is_named():
