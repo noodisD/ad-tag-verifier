@@ -1391,6 +1391,8 @@ function reportBlocks(rows) {
 function blockProblems(g, r) {
   const out = [...(r.problems || [])];
   g.meas.forEach(m => (m.problems || []).forEach(x => out.push(x)));
+  g.cols.filter(c => c.value === "not seen").forEach(c =>
+    out.push(`the sheet books ${c.label} for this placement, but no ${c.label} beacon fired`));
   if (r.missing || r.imp !== "yes" || r.clk !== "yes") (r.diag || []).forEach(x => out.push(x));
   return [...new Set(out)];
 }
