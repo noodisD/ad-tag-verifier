@@ -155,3 +155,35 @@ def test_nothing_to_click_and_nothing_found_is_one_cause_not_two():
                                   "model could not locate the creative (looked through 5 screens)",
                                   "click skipped: no clickable creative frame found"))
     assert out == ["the vision check could not find the creative on screen"]
+
+
+# ── creative_tags: what the delivered creative actually carries ──────────
+
+def _ad_response_har(tmp_path, body, creative_id="900"):
+    p = tmp_path / "run.har"
+    p.write_text(json.dumps({"log": {"entries": [{
+        "startedDateTime": "2026-10-02T10:00:00.000Z",
+        "request": {"url": "https://securepubads.g.doubleclick.net/gampad/ads?iu=1"},
+        "response": {"status": 200, "content": {"mimeType": "text/html", "text": body}}}]}}),
+        encoding="utf-8")
+    return p
+
+
+CARRIED = ('<div>creative 900</div><SCRIPT SRC="https://ad.doubleclick.net/ddm/trackimpj/'
+           'N1.2GAZETA.PL0/B3.457772020;ord=1"></SCRIPT>')
+
+
+def test_the_tag_a_previewed_creative_carries_is_read_from_its_response(tmp_path):
+    """haps.pl: GAM delivered the previewed Pepco creative, and it carried CM360
+    placement 457772020 — not either of the two the sheet books. "The booked tag
+    did not fire" hid that."""
+    out = findings.creative_tags(_ad_response_har(tmp_path, CARRIED), "900")
+    assert ("CM360", "impression", "457772020") in out
+
+
+def test_a_response_for_another_creative_is_not_read(tmp_path):
+    assert findings.creative_tags(_ad_response_har(tmp_path, CARRIED), "123") == []
+
+
+def test_no_creative_id_means_nothing_to_read(tmp_path):
+    assert findings.creative_tags(_ad_response_har(tmp_path, CARRIED), None) == []

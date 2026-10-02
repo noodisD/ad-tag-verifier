@@ -272,3 +272,22 @@ def test_one_vendor_raising_does_not_hide_the_others(monkeypatch):
     monkeypatch.setattr(vendors.VENDORS[-1], "classify", boom)
     assert vendors.classify("https://track.adform.net/C/?bn=90194589") \
         == [("Adform", vendors.CLICK, "90194589")]
+
+
+# ── CM360's three impression forms ──────────────────────────────────────
+# Seen on haps.pl / kobieta.gazeta.pl, where the creative fires the JavaScript form.
+
+import pytest
+
+
+@pytest.mark.parametrize("form", ["trackimp", "trackimpi", "trackimpj"])
+def test_every_cm360_impression_form_is_an_impression(form):
+    assert vendors.classify(
+        f"https://ad.doubleclick.net/ddm/{form}/N1731505.148648GAZETA.PL0/B36859720.457772020;ord=1"
+    ) == [("CM360", vendors.IMPRESSION, "457772020")]
+
+
+def test_cm360_click_is_still_a_click():
+    assert vendors.classify(
+        "https://ad.doubleclick.net/ddm/trackclk/N1731505.148648GAZETA.PL0/B36989652.457781888;dc_trk_aid=1"
+    ) == [("CM360", vendors.CLICK, "457781888")]

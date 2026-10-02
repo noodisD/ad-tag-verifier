@@ -103,7 +103,13 @@ CM360 = Vendor(
     id_label="placement",
     kinds={
         CLICK: ("ad.doubleclick.net/ddm/trackclk/", r"B\d+\.(\d+)"),
-        IMPRESSION: ("ad.doubleclick.net/ddm/trackimp/", r"B\d+\.(\d+)"),
+        # CM360 hands an impression tag out in three forms — image (trackimp),
+        # iframe (trackimpi) and JavaScript (trackimpj) — on the same path
+        # stem. Matching only `trackimp/` missed the other two: on haps.pl and
+        # kobieta.gazeta.pl the creative fires `trackimpj`, twelve tests read
+        # "no tags fired", and the real finding (a tag for a different
+        # placement than the one booked) was invisible.
+        IMPRESSION: ("ad.doubleclick.net/ddm/trackimp", r"B\d+\.(\d+)"),
     },
 )
 

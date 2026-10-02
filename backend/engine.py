@@ -18,6 +18,7 @@ exists to catch. Deriving both sides from one classifier makes the mismatch
 unrepresentable.
 """
 
+import re
 from pathlib import Path
 
 from core.ai import creative_click, match as ai_match
@@ -237,6 +238,29 @@ def discover(browser, target, run_dir):
     # and from the HAR, so the report can name the cause instead of leaving
     # "no tag fired" to be interpreted.
     diagnosis = findings.diagnose(meta, har_path=har if har.exists() else None)
+
+    # When the sheet's ids are known and none of them fired, say what did.
+    # Two very different situations hide behind "the booked tag did not fire":
+    # the creative never came, or it came carrying a different placement's tag.
+    # An Ad Manager preview names its creative, so the response that delivered it
+    # can be read directly.
+    wanted = {str(i) for i in (target.get("wait_for") or []) if i}
+    serving_fired = sorted({(b["vendor"], b["id"]) for b in fired
+                            if b["vendor"] in vendors.SERVING_VENDORS
+                            and b["kind"] == vendors.IMPRESSION and b.get("id")})
+    if wanted and not any(i in wanted for _v, i in serving_fired) and har.exists():
+        cid = re.search(r"[?&]creativeId=(\d+)", target.get("url", ""))
+        carried = [(v, i) for v, k, i in findings.creative_tags(har, cid.group(1) if cid else None)
+                   if v in vendors.SERVING_VENDORS and k == vendors.IMPRESSION and i not in wanted]
+        if carried:
+            diagnosis = [d for d in diagnosis if "never served" not in d]
+            diagnosis.insert(0, f"the previewed creative (creativeId {cid.group(1)}) carries "
+                                + ", ".join(f"{v} {i}" for v, i in carried[:3])
+                                + ", which the sheet does not book")
+        elif serving_fired:
+            diagnosis = [d for d in diagnosis if "never served" not in d]
+            diagnosis.insert(0, "tags fired on the page, but none this campaign books: "
+                                + ", ".join(f"{v} {i}" for v, i in serving_fired[:3]))
 
     status = "error" if meta.get("error") else ("done" if found else "none")
     return {

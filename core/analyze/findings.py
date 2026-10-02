@@ -244,6 +244,48 @@ def diagnose(meta, har_path=None, har=None):
     return out
 
 
+_URL_IN_BODY = re.compile(r"""https?://[^\s"'<>\\]+""", re.IGNORECASE)
+
+
+def creative_tags(har_path, creative_id):
+    """The vendor tags carried by the ad response that delivered one creative.
+
+    An Ad Manager preview link names the creative it shows (`creativeId=`), and
+    the response that served it is in the HAR. Reading the tags out of that
+    response answers "what did the creative actually carry?" — which separates
+    "the creative never came" from "it came with a different placement's tag",
+    two situations that both look like "the booked tag did not fire".
+
+    -> sorted [(vendor, kind, id)], serving and measurement vendors alike.
+    """
+    if not creative_id:
+        return []
+    try:
+        with open(har_path, encoding="utf-8") as f:
+            har = json.load(f)
+    except Exception:
+        return []
+    found = set()
+    cid = str(creative_id)
+    for e in har.get("log", {}).get("entries", []):
+        if "gampad/ads" not in e.get("request", {}).get("url", ""):
+            continue
+        content = e.get("response", {}).get("content", {}) or {}
+        text = content.get("text") or ""
+        if content.get("encoding") == "base64" and text:
+            try:
+                text = base64.b64decode(text).decode("utf-8", "replace")
+            except Exception:
+                continue
+        if cid not in text:
+            continue
+        for url in _URL_IN_BODY.findall(_readable(text)):
+            for vendor, kind, ident in vendors.classify(url):
+                if ident and ident != "present":
+                    found.add((vendor, kind, ident))
+    return sorted(found)
+
+
 def analyze(meta, expected_id=None, require_click=True, rederive=True):
     """Turn one artifact into a verdict.
 

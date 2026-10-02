@@ -664,11 +664,11 @@ function fieldsOf(u, platform) {
   } else if (platform === "CM360") {
     const aid = param(u, "dc_trk_aid");
     const cid = param(u, "dc_trk_cid");
-    const pair = u.match(/ddm\/track(?:imp|clk)\/(N[\d.]+)\/(B[\d.]+)/i);
+    const pair = u.match(/ddm\/track(?:imp[ij]?|clk)\/(N[\d.]+)\/(B[\d.]+)/i);
     // The placement id, read the same way the backend reads it off the live
     // page: the number after `B36716444.`. This is what the two sides are
     // matched on, so it must come out of the sheet's tag identically.
-    const placement = u.match(/ddm\/track(?:imp|clk)\/[^/]+\/B\d+\.(\d+)/i);
+    const placement = u.match(/ddm\/track(?:imp[ij]?|clk)\/[^/]+\/B\d+\.(\d+)/i);
     if (placement) out.push(["placement", "placement id", placement[1]]);
     if (aid) out.push(["dc_trk_aid", "dc_trk_aid", aid]);
     if (cid) out.push(["dc_trk_cid", "dc_trk_cid", cid]);
@@ -1248,9 +1248,11 @@ function reportRows() {
     if (!vendorsHere.length) {
       const seen = Object.keys(r.vendors || {});
       out.push({ ...base, vendor: "—", imp: "no", clk: "no", missing: true,
-                 sheet: seen.length ? "only unselected vendors fired: " + seen.join(", ")
+                 sheet: seen.length ? "no campaign tags fired (other tags on the page: " + seen.join(", ") + ")"
                                     : "no tags fired" });
     }
+    let firstServing = null;
+    const foreignServing = [];
     vendorsHere.forEach(vendor => {
       const k = kinds[vendor] || {};
       const measurement = VENDOR_ROLE[vendor] === "measurement";
@@ -1270,6 +1272,16 @@ function reportRows() {
         if (v === "present") return;
         ((((idx[vendor] || {})[f] || {})[v] || []).length ? inSheet : foreign).push(v);
       }));
+      // With the sheet loaded, a serving tag that books none of what fired is
+      // not this campaign's row at all — it is something else on the page, and
+      // dressing it as a failed row of ours ("Adform 90481738, not in sheet,
+      // click not tested") made a page where the campaign never fired look like
+      // one where it fired and was mis-implemented. It is listed as what else
+      // was there.
+      if (haveSheet && !measurement && !inSheet.length) {
+        foreignServing.push(`${vendor} ${[...new Set(ids)].join(", ")}`);
+        return;
+      }
       // Impression and click belong to an ID, not to a vendor. Crediting the
       // vendor let another advertiser's CM360 click on the same page tick this
       // placement's click — a pass for a click nobody made on our creative.
@@ -1294,7 +1306,7 @@ function reportRows() {
           && !sheet.some(n => servingRowsOf(r).has(n))) {
         problems.push(vendor + " tag belongs to a different placement than the serving tag");
       }
-      out.push({
+      const row = {
         publisher: sheet.map(publisherOf).find(Boolean) || "—",
         test: t.desc || targetLabel(t),
         url: t.url,
@@ -1311,8 +1323,17 @@ function reportRows() {
              : r.click_attempted === false ? "not tested"
              : "no",
         problems,
-      });
+      };
+      out.push(row);
+      if (!measurement && !firstServing) firstServing = row;
     });
+    if (firstServing && foreignServing.length) {
+      firstServing.others = [firstServing.others, ...foreignServing].filter(Boolean).join("; ");
+    } else if (!firstServing && vendorsHere.length) {
+      out.push({ ...base, vendor: "—", imp: "no", clk: "no", missing: true,
+                 sheet: "no tags from this campaign fired"
+                        + (foreignServing.length ? " — other tags on the page: " + foreignServing.join("; ") : "") });
+    }
     missingMeasurement(r).forEach(m => out.push({
       ...base,
       publisher: [...m.rows].map(publisherOf).find(Boolean) || "—",
