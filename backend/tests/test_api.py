@@ -203,3 +203,26 @@ def test_the_run_snapshot_names_the_rows_waiting_on_a_person(client, monkeypatch
     body = client.get(f"/discover/{run_id}").get_json()
     assert body["watch_ids"] == ["t0"]
     assert "done_event" not in body, "a threading.Event must never reach JSON"
+
+
+def test_a_target_that_stops_answering_is_cut_off_and_the_next_one_runs(monkeypatch, tmp_path):
+    """kultura.onet.pl sat for 22 minutes in a background run and held every test
+    behind it. The browser is killed from outside the stuck call."""
+    pytest.importorskip("psutil")
+    monkeypatch.setattr(api, "TARGET_TIMEOUT_S", 4)
+    api._create_run("discover", [{"id": "a"}, {"id": "b"}], [])
+    run_id = next(iter(api.RUNS))
+
+    def work(browser, target, run_dir):
+        page = browser.new_page()
+        if target["id"] == "a":
+            page.evaluate("() => new Promise(() => {})")      # never answers
+        page.close()
+        return {"status": "done"}
+
+    t0 = time.time()
+    api._run_worker(run_id, [{"id": "a"}, {"id": "b"}], work, tmp_path)
+    res = api.RUNS[run_id]["results"]
+    assert res["a"]["status"] == "error" and "stopped responding" in res["a"]["detail"]
+    assert res["b"]["status"] == "done"
+    assert time.time() - t0 < 60

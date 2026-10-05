@@ -177,6 +177,32 @@ def _read_run(kind, run_id):
                 "results": dict(run["results"])}
 
 
+# The longest one target may take. Every Playwright call on a page that stops
+# answering waits forever — kultura.onet.pl sat for 22 minutes in a background
+# run and held every test queued behind it. The slowest legitimate run is the
+# video strategy (~200s), so this is generous.
+TARGET_TIMEOUT_S = 420
+
+
+def _kill_browsers():
+    """Kill this process's Chromium processes, from outside the stuck call.
+
+    Playwright's sync API is bound to the thread that started it, so the stuck
+    call cannot be cancelled from another thread — but the browser it is
+    waiting on can be killed, and the call then fails at once."""
+    try:
+        import psutil
+        for c in psutil.Process().children(recursive=True):
+            try:
+                n = (c.name() or "").lower()
+                if "chrome" in n or "headless_shell" in n or "chromium" in n:
+                    c.kill()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _run_worker(run_id, targets, work, run_dir, headless=True):
     """Drive `work(browser, target, run_dir)` over the targets, recording as
     it goes. Every target leaves an artifact under run_dir, so a wrong
@@ -187,13 +213,27 @@ def _run_worker(run_id, targets, work, run_dir, headless=True):
             try:
                 for t in targets:
                     _set_result(run_id, t["id"], {"status": "running"})
+                    if not browser.is_connected():
+                        browser = p.chromium.launch(headless=headless, args=LAUNCH_ARGS)
+                    timer = threading.Timer(TARGET_TIMEOUT_S, _kill_browsers)
+                    timer.daemon = True
+                    timer.start()
                     try:
                         result = work(browser, t, run_dir)
                     except Exception as e:
                         result = {"status": "error", "detail": str(e)[:200]}
+                    finally:
+                        timer.cancel()
+                    if not browser.is_connected():
+                        result = {"status": "error",
+                                  "detail": f"the page stopped responding for {TARGET_TIMEOUT_S}s "
+                                            "and the browser was closed"}
                     _set_result(run_id, t["id"], result)
             finally:
-                browser.close()
+                try:
+                    browser.close()
+                except Exception:
+                    pass
     except Exception as e:
         # Whatever stopped the run before any target could be judged. Usually
         # chromium is not installed. Without this the exception disappears into
