@@ -431,6 +431,18 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
         _log(meta, "no new tab opened by the click")
 
     _confirm_click(recorder, meta, expected_id, since, source="frame")
+    if meta.get("click_result") != "none":
+        return
+
+    # The element was clicked and nothing tracked. Deterministic targeting
+    # found *a* clickable thing, not necessarily the creative (OLX Polubienia:
+    # the model sees the banner the page's own link logic does not). Give the
+    # model one look before reporting the click as absent.
+    found = _ask_where(page, settings, meta, expected_id)
+    if found:
+        _clicked_at(page, ctx, recorder, settings, meta, expected_id,
+                    found["x"] + found["w"] / 2, found["y"] + found["h"] / 2,
+                    len(recorder.beacons), source="model")
 
 
 # How many screens of a page the vision fallback is willing to look through.
