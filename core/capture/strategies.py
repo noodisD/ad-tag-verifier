@@ -284,6 +284,38 @@ def _click_overlay(page, ctx, recorder, settings, meta, expected_id):
     return meta.get("click_result") == "confirmed"
 
 
+def _hittable_point(el):
+    """A point on screen where `el` itself is the topmost thing, nearest its centre.
+
+    -> (x, y) in viewport coordinates, or None when no sampled point is its own.
+    A click-through anchor stretched over a whole wallpaper has its geometric
+    centre under the article column; clicking there lands on the article.
+    """
+    try:
+        pt = el.evaluate(
+            """e => {
+                 const r = e.getBoundingClientRect();
+                 const x0 = Math.max(r.left, 0), x1 = Math.min(r.right, innerWidth - 1);
+                 const y0 = Math.max(r.top, 0), y1 = Math.min(r.bottom, innerHeight - 1);
+                 if (x1 - x0 < 4 || y1 - y0 < 4) return null;
+                 const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+                 let best = null, bestD = Infinity;
+                 for (let i = 0; i <= 24; i++) for (let j = 0; j <= 16; j++) {
+                   const x = x0 + (x1 - x0) * i / 24, y = y0 + (y1 - y0) * j / 16;
+                   const t = document.elementFromPoint(x, y);
+                   if (t && (e.contains(t) || t.contains(e)) && t !== document.body
+                       && t !== document.documentElement) {
+                     const d = (x - cx) ** 2 + (y - cy) ** 2;
+                     if (d < bestD) { bestD = d; best = [x, y]; }
+                   }
+                 }
+                 return best;
+               }""")
+    except Exception:
+        return None
+    return tuple(pt) if pt else None
+
+
 def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
     """Click the creative and follow where it goes.
 
@@ -359,13 +391,23 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
     # creative. element.click() targets the element itself and is still a
     # trusted event (it is CDP input, unlike page.evaluate("el.click()"),
     # which publishers' overlays ignore because isTrusted is false).
+    # A wallpaper's click-through anchor is as large as the page, so its centre
+    # sits under the article column. Click where the element itself is on top.
+    spot = _hittable_point(el)
+    if spot and (abs(spot[0] - cx) > 1 or abs(spot[1] - cy) > 1):
+        cx, cy = spot
+    else:
+        spot = None
     _log(meta, f"element click at ({cx:.0f},{cy:.0f})")
     try:
         with ctx.expect_page(timeout=8000) as popup:
-            try:
-                el.click(timeout=5000)
-            except Exception:
-                page.mouse.click(cx, cy)      # last resort
+            if spot:
+                page.mouse.click(cx, cy)
+            else:
+                try:
+                    el.click(timeout=5000)
+                except Exception:
+                    page.mouse.click(cx, cy)      # last resort
         newp = popup.value
         deadline = time.time() + 12
         last = ""

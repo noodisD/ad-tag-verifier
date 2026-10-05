@@ -88,6 +88,29 @@ _STILL = r"""(phrases) => {
 }"""
 
 
+def _click_top_frame(page):
+    """One pass over the top frame's accept candidates. The label clicked, or None."""
+    try:
+        for cand in page.evaluate(_FIND, PHRASES):
+            try:
+                page.mouse.click(cand["x"], cand["y"])
+            except Exception:
+                continue
+            time.sleep(2)
+            if not still_up(page):
+                return cand["label"][:60]
+    except Exception:
+        pass
+    return None
+
+
+# How long to keep looking for a wall that was not there at first look. A
+# slower browser (a visible window, a busy machine) renders the CMP late;
+# one pass at a fixed delay then finds nothing and the run carries on behind
+# the wall — Onet mobile did exactly that in a headed run.
+LATE_WALL_S = 6
+
+
 def accept(page, settle=3.0):
     """Dismiss the consent wall. Returns the label clicked, or None.
 
@@ -101,17 +124,9 @@ def accept(page, settle=3.0):
     """
     time.sleep(settle)
 
-    try:
-        for cand in page.evaluate(_FIND, PHRASES):
-            try:
-                page.mouse.click(cand["x"], cand["y"])
-            except Exception:
-                continue
-            time.sleep(2)
-            if not still_up(page):
-                return cand["label"][:60]
-    except Exception:
-        pass
+    label = _click_top_frame(page)
+    if label:
+        return label
 
     # Sub-frame CMPs: the coordinates above are frame-relative and would land
     # in the wrong place, so these keep the in-page click.
@@ -139,6 +154,14 @@ def accept(page, settle=3.0):
                     return f"selector:{sel}"
             except Exception:
                 pass
+
+    deadline = time.time() + LATE_WALL_S
+    while time.time() < deadline:
+        if still_up(page):
+            label = _click_top_frame(page)
+            if label:
+                return label
+        time.sleep(1)
 
     return None
 

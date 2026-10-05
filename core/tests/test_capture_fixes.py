@@ -243,3 +243,26 @@ def test_the_click_is_judged_against_the_id_that_fired():
     assert strategies._aim_id(rec, None, {"457781885", "457781882"}) == "457781885"
     assert strategies._aim_id(rec, "7", {"457781885"}) == "7"
     assert strategies._aim_id(_Beacons("1"), None, {"457781885"}) is None
+
+
+WALLPAPER = ('<body style="margin:0"><a id="skin" href="https://csr.example/clk" '
+             'style="position:absolute;left:0;top:0;width:1000px;height:700px;display:block"></a>'
+             '<div style="position:absolute;left:200px;top:0;width:600px;height:700px;background:#fff">article</div>'
+             '</body>')
+
+
+def test_a_wallpaper_anchor_is_clicked_where_it_is_on_top(browser_page):
+    """Onet screening: the click-through anchor covers the whole page, so its
+    centre sits under the article column and a click there hits the article."""
+    browser_page.set_content(WALLPAPER)
+    pt = strategies._hittable_point(browser_page.query_selector("#skin"))
+    assert pt is not None
+    assert not 200 <= pt[0] <= 800                    # outside the article column
+    top = browser_page.evaluate("([x, y]) => document.elementFromPoint(x, y).id", list(pt))
+    assert top == "skin"
+
+
+def test_an_unobstructed_element_is_hittable_at_its_centre(browser_page):
+    browser_page.set_content('<a id="a" href="#" style="display:block;width:300px;height:200px"></a>')
+    pt = strategies._hittable_point(browser_page.query_selector("#a"))
+    assert abs(pt[0] - 150) < 20 and abs(pt[1] - 100) < 20

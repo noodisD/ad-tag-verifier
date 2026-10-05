@@ -25,6 +25,7 @@ Two properties matter to the caller and are easy to get wrong:
   200 carrying a shape the caller cannot read.
 """
 
+import os
 import sys
 import threading
 import time
@@ -205,7 +206,11 @@ def _run_worker(run_id, targets, work, run_dir, headless=True):
 
 def _start(kind, need_platform, work):
     """Shared POST handler for /verify and /discover."""
-    raw = (request.get_json(silent=True) or {}).get("targets", [])
+    body = request.get_json(silent=True) or {}
+    raw = body.get("targets", [])
+    # The operator can ask to watch the run: a visible window instead of a
+    # headless one. TAGVERIFIER_HEADED=1 makes that the default.
+    headed = bool(body.get("headed")) or os.environ.get("TAGVERIFIER_HEADED") == "1"
     accepted, rejected = _split_targets(raw, need_platform)
     if not accepted:
         return jsonify({"error": "no usable targets", "rejected": rejected}), 400
@@ -236,7 +241,7 @@ def _start(kind, need_platform, work):
             RUNS[run_id]["done_event"] = done
 
     threading.Thread(target=_run_worker,
-                     args=(run_id, accepted, work, run_dir, not windowed),
+                     args=(run_id, accepted, work, run_dir, not (windowed or headed)),
                      daemon=True).start()
     return jsonify({"run_id": run_id, "rejected": rejected,
                     "artifacts": str(run_dir), "watch_ids": watch_ids})
