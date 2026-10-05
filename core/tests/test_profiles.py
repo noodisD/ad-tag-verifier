@@ -133,11 +133,12 @@ def test_vod_pages_use_the_video_strategy():
         assert s["patience"] >= 180, url
 
 
-def test_video_needs_a_window():
-    """bring_to_front is meaningless headless, and that is where the
-    measurement came from."""
+def test_only_watch_needs_a_window():
+    """A scan runs in the background. Video used to open a window on the strength
+    of an occluded-tab measurement that does not apply headless: TVN's pre-roll
+    played at 31s with no window at all."""
     from core.capture import strategies
-    assert "video" in strategies.NEEDS_WINDOW
+    assert strategies.NEEDS_WINDOW == {"watch"}
 
 
 class TestWaitingForTheCampaign:

@@ -467,9 +467,6 @@
           <button type="button" class="btn-outline" id="runScan" disabled>Scan test pages</button>
           <button type="button" class="btn-outline" id="rerunUnresolved" hidden></button>
           <div class="backend-hint">
-            <label><input id="showBrowser" type="checkbox"> show the browser while testing</label>
-          </div>
-          <div class="backend-hint">
             <label for="advertiser">advertiser</label>
             <input id="advertiser" type="text" list="advertisers" placeholder="e.g. Shell" size="22">
             <datalist id="advertisers">
@@ -1582,18 +1579,6 @@ function apiFetch(path, opts, ms) {
 }
 
 const apiGet = (path, ms) => apiFetch(path, {}, ms || 8000);
-// Whether to run the tests in a window the operator can watch. Remembered
-// between sessions; the page works the same if storage is unavailable.
-const showBrowser = () => !!document.getElementById("showBrowser")?.checked;
-(function () {
-  const box = document.getElementById("showBrowser");
-  if (!box) return;
-  try { box.checked = localStorage.getItem("showBrowser") === "1"; } catch (e) { /* storage blocked */ }
-  box.addEventListener("change", () => {
-    try { localStorage.setItem("showBrowser", box.checked ? "1" : "0"); } catch (e) { /* storage blocked */ }
-  });
-})();
-
 const apiPost = (path, payload, ms) => apiFetch(path, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -1688,7 +1673,7 @@ function runVerification() {
   targets.forEach(t => { state.verify[t.id] = { status: "pending" }; });
   renderVerify();
 
-  apiPost("/verify", { targets, headed: showBrowser() })
+  apiPost("/verify", { targets })
     .then(data => {
       applyRejected(state.verify, data.rejected);
       renderVerify();
@@ -1807,7 +1792,7 @@ function runScan(only) {
 
   const redraw = () => { renderScan(); renderVendors(); renderMatch(); };
 
-  apiPost("/discover", { targets, headed: showBrowser() })
+  apiPost("/discover", { targets })
     .then(data => {
       applyRejected(state.scan, data.rejected);
       state.scanRunId = data.run_id;

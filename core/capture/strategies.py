@@ -230,6 +230,30 @@ def _await_overlay(page, timeout, poll=0.15):
     return None
 
 
+_OVERLAY_LINK_PROBE = """() => {
+    const e = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+    const a = e && e.closest && e.closest('a[href]');
+    if (!a) return null;
+    const r = a.getBoundingClientRect();
+    if (r.width * r.height < 0.3 * innerWidth * innerHeight) return null;
+    return [innerWidth / 2, innerHeight / 2];
+}"""
+
+
+def _wait_overlay_link(page, timeout, poll=0.2):
+    """-> (x, y) of the centre once a link that fills the screen sits there, else None."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            pt = page.evaluate(_OVERLAY_LINK_PROBE)
+        except Exception:
+            pt = None
+        if pt:
+            return tuple(pt)
+        time.sleep(poll)
+    return None
+
+
 def _click_overlay(page, ctx, recorder, settings, meta, expected_id):
     """Click a full-screen overlay, straight away.
 
@@ -803,14 +827,24 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
         if panel:
             _log(meta, f"    overlay on screen: <{panel['tag'].lower()}> "
                        f"{panel['w']}x{panel['h']} z={panel['z']}")
+            # The shield goes up before the creative is in it. Clicking the
+            # moment it appears lands on nothing (the bank client's Adform Commercial
+            # Break: the click link arrives a second or two later and the
+            # overlay is gone a few seconds after that), so wait for a
+            # link that fills the screen and click that.
+            spot = _wait_overlay_link(page, settings.get("overlay_link_wait", 10))
+            if spot:
+                _log(meta, "    the creative's link is in the overlay")
+            px, py = spot or (panel["x"], panel["y"])
             since = len(recorder.beacons)
             try:
-                page.mouse.click(panel["x"], panel["y"])
+                page.mouse.click(px, py)
             except Exception as e:
                 _log(meta, f"    overlay click failed: {str(e)[:60]}")
             time.sleep(2)
-            _confirm_click(recorder, meta, _aim_id(recorder, expected, ids), since,
-                           source="overlay")
+            _confirm_click(recorder, meta,
+                           _aim_id(recorder, expected, ids) or (tuple(sorted(ids)) or None),
+                           since, source="overlay")
             if meta.get("click_result") == "confirmed":
                 _log(meta, "    overlay fired")
                 return
@@ -1012,7 +1046,7 @@ def _serving_impressions(recorder):
             and b.get("vendor") in vendors.SERVING_VENDORS and b.get("id")}
 
 
-def _await_video(page, recorder, expected_id, budget):
+def _await_video(page, recorder, expected_id, budget, ids=()):
     """Wait for a spot to start, keeping the tab alive. -> what started.
 
     Returns "expected", "other" or None. Stopping on *any* serving impression
@@ -1020,11 +1054,15 @@ def _await_video(page, recorder, expected_id, budget):
     routinely trafficked as two spots in rotation, and waiting out the full
     budget for the 30s creative while the 15s one played and finished left
     the click landing on an empty player 160s later.
+
+    `ids` are the sheet's ids when a scan has no single expected one: any of
+    them counts as the campaign's own spot.
     """
+    mine = ({expected_id} if expected_id else set()) | {str(i) for i in ids}
     deadline = time.time() + budget
     while True:
         served = _serving_impressions(recorder)
-        if expected_id and expected_id in served:
+        if mine & served:
             return "expected"
         if served:
             return "other"
@@ -1032,6 +1070,23 @@ def _await_video(page, recorder, expected_id, budget):
             return None
         _keep_active(page)
         time.sleep(1.0)
+
+
+# How long a pod gets to reach the campaign's own spot after somebody else's
+# played first. TVN's test page plays other advertisers' spots ahead of the
+# one under test; clicking the first one tested a click that was not ours.
+POD_WAIT_S = 45
+
+
+def _await_own_spot(page, recorder, expected_id, ids, budget):
+    mine = ({expected_id} if expected_id else set()) | {str(i) for i in ids}
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        if mine & _serving_impressions(recorder):
+            return True
+        _keep_active(page)
+        time.sleep(1.0)
+    return False
 
 
 def video(page, ctx, recorder, settings, meta, target):
@@ -1045,6 +1100,7 @@ def video(page, ctx, recorder, settings, meta, target):
     `track.adform.net/C/?bn=`.
     """
     expected_id = target.get("expected_id")
+    sheet_ids = [str(i) for i in (target.get("wait_for") or []) if i]
     _goto(page, target["url"], meta)
     _keep_active(page)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
@@ -1058,7 +1114,7 @@ def video(page, ctx, recorder, settings, meta, target):
     # its own, and there pressing play is not merely unnecessary — it is how
     # the run navigates away from the page it is meant to be testing.
     grace = min(settings.get("play_wait", 12), settings["patience"])
-    started = _await_video(page, recorder, expected_id, grace)
+    started = _await_video(page, recorder, expected_id, grace, sheet_ids)
     if started is None and settings.get("play", "auto") != "none":
         spot = _play_control(page, meta)
         if spot:
@@ -1069,7 +1125,7 @@ def video(page, ctx, recorder, settings, meta, target):
         else:
             _log(meta, "no play control found; waiting for autoplay")
         started = _await_video(page, recorder, expected_id,
-                               max(settings["patience"] - grace, 10))
+                               max(settings["patience"] - grace, 10), sheet_ids)
 
     _log(meta, f"video impression {'seen' if started else 'NOT seen'} "
                f"within {settings['patience']}s")
@@ -1081,6 +1137,12 @@ def video(page, ctx, recorder, settings, meta, target):
     # click that landed perfectly on `?bn=90116854` as "the slot is carrying
     # another advertiser", which is not what a rotation partner is.
     click_target = expected_id
+    if started == "other" and (expected_id or sheet_ids):
+        _log(meta, f"another spot played first — waiting up to {POD_WAIT_S}s for the campaign's own")
+        if _await_own_spot(page, recorder, expected_id, sheet_ids, POD_WAIT_S):
+            started = "expected"
+    if started == "expected" and not expected_id and sheet_ids:
+        click_target = _aim_id(recorder, None, set(sheet_ids))
     if started == "other":
         other = sorted(_serving_impressions(recorder) - {expected_id})
         click_target = other[0] if len(other) == 1 else None
@@ -1137,10 +1199,12 @@ def video(page, ctx, recorder, settings, meta, target):
                    "click cannot be tested automatically on this one; use watch")
 
 
-# Strategies that cannot run in a headless browser. "watch" hands the window
-# to a person, and "video" fronts the tab on purpose: a player whose tab
-# Chrome considers occluded defers its pre-roll for minutes.
-NEEDS_WINDOW = {"watch", "video"}
+# Strategies that cannot run in a headless browser. Only "watch": it hands the
+# window to a person. "video" used to be here on the strength of a tab Chrome
+# treats as occluded deferring its pre-roll for minutes — true of a headed
+# window behind others, not of a headless one: TVN's pre-roll played at 31s
+# headless. A scan runs in the background; nothing opens on screen.
+NEEDS_WINDOW = {"watch"}
 
 _STRATEGIES = {
     "load": load,
