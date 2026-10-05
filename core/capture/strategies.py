@@ -147,7 +147,7 @@ CLICK_HREF_HINTS = ("track.adform.net/C/", "adclick.g.doubleclick.net",
 
 def _clickthrough_element(page):
     """An <a> whose href is the campaign's click tracker, in any frame."""
-    for fr in page.frames:
+    for fr in consent.live_frames(page):
         try:
             handle = fr.evaluate_handle(
                 """(hints) => {

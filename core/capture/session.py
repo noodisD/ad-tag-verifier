@@ -138,7 +138,7 @@ class Recorder:
 
 def _dom_scan(page, recorder):
     """Record URLs present in markup but never requested, flagged as such."""
-    for frame in page.frames:
+    for frame in consent.live_frames(page):
         try:
             html = frame.content()
         except Exception:

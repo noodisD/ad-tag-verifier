@@ -88,6 +88,25 @@ _STILL = r"""(phrases) => {
 }"""
 
 
+def live_frames(page):
+    """The page's frames that can be asked something right now.
+
+    A frame with no address yet (an ad iframe still being created) never answers
+    `evaluate` in a visible browser, and the call has no timeout — the whole run
+    sat there: money.pl hung for good in a headed window and took ten minutes of
+    queued tests with it, while the same page took 13 seconds headless.
+    """
+    out = []
+    for fr in page.frames:
+        try:
+            if fr.is_detached() or not fr.url:
+                continue
+        except Exception:
+            continue
+        out.append(fr)
+    return out
+
+
 def _click_top_frame(page):
     """One pass over the top frame's accept candidates. The label clicked, or None."""
     try:
@@ -130,7 +149,7 @@ def accept(page, settle=3.0):
 
     # Sub-frame CMPs: the coordinates above are frame-relative and would land
     # in the wrong place, so these keep the in-page click.
-    for frame in page.frames:
+    for frame in live_frames(page):
         if frame is page.main_frame:
             continue
         try:
@@ -144,7 +163,7 @@ def accept(page, settle=3.0):
         except Exception:
             pass
 
-    for target in [page] + list(page.frames):
+    for target in [page] + live_frames(page):
         for sel in SELECTORS:
             try:
                 btn = target.locator(sel).first

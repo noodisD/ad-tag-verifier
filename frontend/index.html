@@ -749,7 +749,13 @@ const PREVIEW_MARKERS = [
   // 26 Pepco tests were dropped before the scan began and the report said
   // "22 test pages" without a word about the other four.
   "smartpreview", "deaz.io/preview",
+  // Test pages that name themselves: Interia's ad tester (`#adtester2023_…`),
+  // Polsat's `?TEST29` on an Interia title, and the Kontekstowa and Sample
+  // Data staging hosts. Seven bank-client tests were dropped before the scan for
+  // lacking any of the markers above.
+  "adtester", "kontekstowa-testy.pl", "tests.sampledata.pl",
 ];
+const TEST_QUERY = /[?&]test\d*(?:[&#=]|$)/i;     // `…,nId,22505921?TEST29`
 
 // What the email called a test, cleaned of what pasting left behind. A link
 // copied out of a mail client arrives as `[www.dziennik.pl/?version=cbm-gory](…)`
@@ -780,7 +786,7 @@ function previewVariant(url) {
     const v = url.match(/[?&]version=([^&#]+)/i);
     return decodeURIComponent(v[1]).replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 44);
   }
-  if (!PREVIEW_MARKERS.some(m => low.includes(m))) return null;
+  if (!PREVIEW_MARKERS.some(m => low.includes(m)) && !TEST_QUERY.test(url)) return null;
   // creName first, and not just because it reads better: it names the
   // creative, while wfName names the whole campaign workflow and is the
   // same across every format in it. An alternation would take whichever
@@ -794,6 +800,13 @@ function previewVariant(url) {
     // report, and the report is what gets sent to the publisher.
     const c = url.match(/[?&]creativeId=(\d+)/i);
     if (c) raw = "creative-" + c[1];
+    else {
+      // Staging pages name themselves in the path or fragment; several of
+      // them for one campaign must not all be "preview".
+      const f = url.match(/#([^&]+)/) || url.match(/[?&](test\d*)/i)
+             || url.replace(/[?#].*$/, "").replace(/\/+$/, "").match(/\/([^/]+)$/);
+      if (f && !/^(www\.|https?:)/i.test(f[1])) raw = f[1];
+    }
   }
   return raw.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 44)
          || "preview";
@@ -806,7 +819,10 @@ function previewVariant(url) {
 // `creName=mobile` link was being opened in a 1400px window, where the mobile
 // creative cannot serve and the run reports a tag that is fine as missing.
 const MOBILE_HINTS = ["mobile", "navik", "smartfon", "phone", "interstitial", "mob_",
-                      "version=cbm"];
+                      "version=cbm",
+                      // The publisher's own mobile host: opening m.olx.pl in a
+                      // desktop window tests the wrong page.
+                      "://m.olx.pl", "://m."];
 // Only formats that are mobile *and nothing else*. 300x250 and 300x600 were
 // on this list and are the two commonest desktop sidebar sizes — every one of
 // them was being opened in a 390px window, where a desktop creative cannot

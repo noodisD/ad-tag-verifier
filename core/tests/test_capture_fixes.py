@@ -266,3 +266,25 @@ def test_an_unobstructed_element_is_hittable_at_its_centre(browser_page):
     browser_page.set_content('<a id="a" href="#" style="display:block;width:300px;height:200px"></a>')
     pt = strategies._hittable_point(browser_page.query_selector("#a"))
     assert abs(pt[0] - 150) < 20 and abs(pt[1] - 100) < 20
+
+
+class _Frame:
+    def __init__(self, url, detached=False):
+        self.url, self._d = url, detached
+
+    def is_detached(self):
+        return self._d
+
+
+class _Page:
+    def __init__(self, frames):
+        self.frames = frames
+
+
+def test_a_frame_with_no_address_is_never_asked_anything():
+    """money.pl, headed: an ad iframe still being created never answers
+    `evaluate`, which has no timeout — the run sat there for good."""
+    from core.capture import consent
+    main, ok = _Frame("https://pub.example/"), _Frame("https://ads.example/x")
+    page = _Page([main, ok, _Frame(""), _Frame("https://gone.example/", detached=True)])
+    assert consent.live_frames(page) == [main, ok]
