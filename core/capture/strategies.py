@@ -473,7 +473,7 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
 MAX_SCREENS = 5
 
 
-def _ask_where(page, settings, meta, expected_id):
+def _ask_where(page, settings, meta, expected_id, _again=True):
     """Let a model point at the creative. -> box in viewport coordinates."""
     eye = settings.get("vision")
     advertiser = settings.get("advertiser")
@@ -530,6 +530,13 @@ def _ask_where(page, settings, meta, expected_id):
                + (f" (looked through {len(offsets)} screens)" if len(offsets) > 1 else "")
                + (f" — model call failed: {last_why['error']}" if last_why.get("error")
                   else f" — last answer: {last_why['reply']}" if last_why.get("reply") else ""))
+    if _again:
+        # The model's answer on the same page differs from one look to the
+        # next (wp.pl mobile: found on one run, "nothing" on the next). One
+        # more pass costs a few seconds; a missed click costs a wrong report.
+        _log(meta, "looking once more")
+        time.sleep(3)
+        return _ask_where(page, settings, meta, expected_id, _again=False)
     return None
 
 

@@ -60,7 +60,7 @@ def test_when_nothing_is_found_the_page_goes_back_and_the_log_says_how_far_it_lo
     monkeypatch.setattr(strategies.creative_click, "locate", lambda *a, **k: None)
     monkeypatch.setattr(strategies.time, "sleep", lambda s: None)
     page, meta = _Page(), {"events": []}
-    assert strategies._ask_where(page, _settings(), meta, "1") is None
+    assert strategies._ask_where(page, _settings(), meta, "1", _again=False) is None
     assert page.y == 0
     assert "looked through" in meta["events"][-1]
 
@@ -70,7 +70,7 @@ def test_the_search_is_bounded(monkeypatch):
     monkeypatch.setattr(strategies.creative_click, "locate",
                         lambda *a, **k: calls.append(1))
     monkeypatch.setattr(strategies.time, "sleep", lambda s: None)
-    strategies._ask_where(_Page(height=90000), _settings(), {"events": []}, "1")
+    strategies._ask_where(_Page(height=90000), _settings(), {"events": []}, "1", _again=False)
     assert len(calls) == strategies.MAX_SCREENS
 
 
@@ -79,7 +79,7 @@ def test_a_short_page_is_one_screenshot(monkeypatch):
     monkeypatch.setattr(strategies.creative_click, "locate",
                         lambda *a, **k: calls.append(1))
     monkeypatch.setattr(strategies.time, "sleep", lambda s: None)
-    strategies._ask_where(_Page(height=800), _settings(), {"events": []}, "1")
+    strategies._ask_where(_Page(height=800), _settings(), {"events": []}, "1", _again=False)
     assert len(calls) == 1
 
 
@@ -288,3 +288,18 @@ def test_a_frame_with_no_address_is_never_asked_anything():
     main, ok = _FakeFrame("https://pub.example/"), _FakeFrame("https://ads.example/x")
     page = _FakeFramesPage([main, ok, _FakeFrame(""), _FakeFrame("https://gone.example/", detached=True)])
     assert consent.live_frames(page) == [main, ok]
+
+
+def test_the_model_gets_a_second_look_when_the_first_pass_finds_nothing(monkeypatch):
+    """Its answer on the same page differs from one look to the next."""
+    passes = []
+
+    def locate(eye, shot, advertiser, viewport, why=None):
+        passes.append(1)
+        return ({"x": 0, "y": 100, "w": 300, "h": 250, "confidence": 0.9, "reason": ""}
+                if len(passes) > 1 else None)
+
+    monkeypatch.setattr(strategies.creative_click, "locate", locate)
+    monkeypatch.setattr(strategies.time, "sleep", lambda s: None)
+    box = strategies._ask_where(_Page(height=800), _settings(), {"events": []}, "1")
+    assert box and len(passes) == 2
