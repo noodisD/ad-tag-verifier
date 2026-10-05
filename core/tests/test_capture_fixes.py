@@ -41,7 +41,7 @@ def _settings():
 def test_the_model_is_shown_every_screen_until_it_finds_the_creative(monkeypatch):
     seen = []
 
-    def locate(eye, shot, advertiser, viewport):
+    def locate(eye, shot, advertiser, viewport, why=None):
         seen.append(shot)
         return ({"x": 900, "y": 300, "w": 160, "h": 600, "confidence": 0.95, "reason": ""}
                 if len(seen) == 3 else None)

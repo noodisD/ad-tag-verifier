@@ -52,11 +52,16 @@ if you are not sure which of several ads is theirs. A wrong location makes the \
 tool click a competitor's ad, which is far worse than not clicking at all."""
 
 
-def locate(model, screenshot_png, advertiser, viewport):
+def locate(model, screenshot_png, advertiser, viewport, why=None):
     """-> {"x","y","w","h","confidence","reason"} or None.
 
-    `screenshot_png` is raw bytes of the current viewport.
+    `screenshot_png` is raw bytes of the current viewport. `why`, when given a
+    dict, is filled with what happened when the answer is None — the call
+    failed, or the model answered and the answer was refused — because "could
+    not locate" is otherwise the same line for a model that looked and a model
+    that never got to.
     """
+    why = why if why is not None else {}
     if model is None or not advertiser:
         return None
     try:
@@ -64,9 +69,13 @@ def locate(model, screenshot_png, advertiser, viewport):
             PROMPT.format(advertiser=advertiser,
                           width=viewport["width"], height=viewport["height"]),
             screenshot_png)
-    except Exception:
+    except Exception as e:
+        why["error"] = f"{type(e).__name__}: {str(e)[:120]}"
         return None
-    return _sane_box(reply, viewport)
+    box = _sane_box(reply, viewport)
+    if box is None:
+        why["reply"] = "no usable answer" if reply is None else str(reply)[:160]
+    return box
 
 
 def _sane_box(reply, viewport):
@@ -129,9 +138,12 @@ def click_confirmed(recorder, expected_id, since_index):
               and b.get("vendor") in vendors.SERVING_VENDORS]
     if not clicks:
         return "none", None
-    if expected_id:
+    # One id, or the set of ids a sheet books when the page never said which of
+    # them it was serving: the click then has to carry one of those.
+    wanted = {expected_id} if isinstance(expected_id, str) else set(expected_id or ())
+    if wanted:
         for b in clicks:
-            if b.get("id") == expected_id:
+            if b.get("id") in wanted:
                 return "confirmed", b["id"]
         # A click tracked, but for somebody else — the slot was refreshed, or
         # the model pointed at a competitor. Worth surfacing on its own: it

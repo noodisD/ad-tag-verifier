@@ -76,6 +76,13 @@ def test_a_click_counts_only_when_the_beacon_agrees():
     assert cc.click_confirmed(rec, "90069314", 0) == ("confirmed", "90069314")
 
 
+def test_a_click_may_carry_any_of_the_sheets_ids():
+    """No impression said which placement was serving, so the click has to
+    carry one of the ids the sheet books — and nothing else is credited."""
+    assert cc.click_confirmed(Rec([_click("B")]), ("A", "B"), 0) == ("confirmed", "B")
+    assert cc.click_confirmed(Rec([_click("Z")]), ("A", "B"), 0)[0] == "other_advertiser"
+
+
 def test_somebody_elses_click_is_never_a_pass():
     """The slot refreshed, or the model pointed at a competitor. Either way
     this campaign's click did not track."""

@@ -329,7 +329,8 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
         return
 
     since = len(recorder.beacons)
-    el, box = _creative_frame(recorder, page, expected_id)
+    el, box = _creative_frame(recorder, page,
+                              None if isinstance(expected_id, (tuple, list, set)) else expected_id)
 
     if not box:
         # Deterministic targeting found nothing — the creative is neither an
@@ -466,6 +467,7 @@ def _ask_where(page, settings, meta, expected_id):
         y += step
         offsets.append(y)
 
+    last_why = {}
     for n, off in enumerate(offsets):
         try:
             if n:
@@ -474,7 +476,10 @@ def _ask_where(page, settings, meta, expected_id):
             shot = page.screenshot(type="png")
         except Exception:
             return None
-        box = creative_click.locate(eye, shot, advertiser, vp)
+        why = {}
+        box = creative_click.locate(eye, shot, advertiser, vp, why)
+        if why:
+            last_why = why
         if box:
             _log(meta, f"model located creative at ({box['x']:.0f},{box['y']:.0f}) "
                        f"{box['w']:.0f}x{box['h']:.0f} conf={box['confidence']}"
@@ -486,7 +491,9 @@ def _ask_where(page, settings, meta, expected_id):
     except Exception:
         pass
     _log(meta, "model could not locate the creative"
-               + (f" (looked through {len(offsets)} screens)" if len(offsets) > 1 else ""))
+               + (f" (looked through {len(offsets)} screens)" if len(offsets) > 1 else "")
+               + (f" — model call failed: {last_why['error']}" if last_why.get("error")
+                  else f" — last answer: {last_why['reply']}" if last_why.get("reply") else ""))
     return None
 
 
@@ -568,7 +575,7 @@ def _aim_id(recorder, expected, ids):
     return None
 
 
-def _click_target_id(recorder, meta, target):
+def _click_target_id(recorder, meta, target, settings=None):
     """Which ID the click should go after, and whether to click at all.
 
     -> (expected_id, go). With an expected ID there is nothing to decide. With
@@ -588,6 +595,13 @@ def _click_target_id(recorder, meta, target):
         if (b.get("kind") == vendors.IMPRESSION and b.get("evidence") == "fired"
                 and str(b.get("id")) in ids):
             return str(b["id"]), True
+    if settings and settings.get("vision") is not None and settings.get("advertiser"):
+        # No booked impression fired — but a creative can be on screen without
+        # one (OLX Polubienia and the deaz.io preview carry no CM360 impression
+        # pixel at all). Let the model look; the click only counts if its
+        # beacon carries one of the sheet's ids, so a wrong guess is discarded.
+        _log(meta, "no booked impression fired — looking for the creative on screen instead")
+        return tuple(ids), True
     _log(meta, "click skipped: none of this campaign's creatives appeared, "
                "so there was nothing of ours to click")
     return None, False
@@ -602,7 +616,7 @@ def load(page, ctx, recorder, settings, meta, target):
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
                          target.get("wait_for"))
-    aim, go = _click_target_id(recorder, meta, target)
+    aim, go = _click_target_id(recorder, meta, target, settings)
     if go:
         _click_creative(page, ctx, recorder, settings, meta, aim)
 
@@ -646,7 +660,7 @@ def gam_preview(page, ctx, recorder, settings, meta, target):
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
                          target.get("wait_for"))
-    aim, go = _click_target_id(recorder, meta, target)
+    aim, go = _click_target_id(recorder, meta, target, settings)
     if go:
         _click_creative(page, ctx, recorder, settings, meta, aim)
 
