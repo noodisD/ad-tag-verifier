@@ -1395,7 +1395,10 @@ function reportBlocks(rows) {
       const label = MEAS_LABEL[v] || v;
       if (m && m.imp === "seen") return { label, value: "seen" };
       if (m) {
-        return { label, value: "not seen" };
+        // A row exists for it, so the sheet books it for this placement and
+        // it did not come through. Without a row, "not seen" only says the
+        // vendor was on other pages of the run — nothing was promised.
+        return { label, value: "not seen", booked: true };
       }
       return bookedByTheSheet(v) ? { label, value: "" } : { label, value: "not seen" };
     });
@@ -1410,7 +1413,7 @@ function reportBlocks(rows) {
 function blockProblems(g, r) {
   const out = [...(r.problems || [])];
   g.meas.forEach(m => (m.problems || []).forEach(x => out.push(x)));
-  g.cols.filter(c => c.value === "not seen").forEach(c =>
+  g.cols.filter(c => c.value === "not seen" && c.booked).forEach(c =>
     out.push(`the sheet books ${c.label} for this placement, but no ${c.label} beacon fired`));
   if (r.missing || r.imp !== "yes" || r.clk !== "yes") (r.diag || []).forEach(x => out.push(x));
   return [...new Set(out)];
@@ -1431,7 +1434,7 @@ function reportText(rows) {
   groups.forEach(g => {
     const colText = g.cols.filter(c => c.value)
       .map(c => `${c.label}: ${c.value}`).join("   ");
-    const anyMissing = g.cols.some(c => c.value === "not seen");
+    const anyMissing = g.cols.some(c => c.value === "not seen" && c.booked);
     if (!g.serving.length) {
       // Nothing from the serving vendors to hang the columns on.
       g.meas.forEach(m => {
@@ -1485,7 +1488,7 @@ function reportHtml(rows) {
       // Red is reserved for something that did not fire. A click nobody managed
       // to attempt is unknown, not failed — colouring it like a defect is how a
       // correct placement gets raised with a publisher.
-      const colMissing = g.cols.some(c => c.value === "not seen");
+      const colMissing = g.cols.some(c => c.value === "not seen" && c.booked);
       const failed = r.missing || (r.problems || []).length || colMissing
                      || (!r.measurement && (r.imp === "no" || r.clk === "no"));
       const unknown = !r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed;
