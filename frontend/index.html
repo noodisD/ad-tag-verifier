@@ -760,8 +760,9 @@ const TEST_QUERY = /[?&]test\d*(?:[&#=]|$)/i;     // `…,nId,22505921?TEST29`
 // all that is left is the link's own text, there is no name — the label built
 // from size and variant says it better.
 function describe(text) {
-  const t = (text || "").replace(/\[([^\]]*)\]\(\s*\)/g, "$1").replace(/\s+/g, " ").trim()
-    .replace(/:$/, "");
+  const t = (text || "").replace(/\[([^\]]*)\]\(\s*\)/g, "$1")
+    .replace(/\s*\bwww\.\S+/gi, "")          // the link's own text, left beside its label
+    .replace(/\s+/g, " ").trim().replace(/:$/, "");
   if (!t || /^(www\.|https?:\/\/)\S+$/i.test(t)) return "";
   return t.slice(0, 90);
 }
@@ -800,7 +801,7 @@ function previewVariant(url) {
     else {
       // Staging pages name themselves in the path or fragment; several of
       // them for one campaign must not all be "preview".
-      const f = url.match(/#([^&]+)/) || url.match(/[?&](test\d*)/i)
+      const f = url.match(/#([^&]+)/) || url.match(/[?&](test\d*)\b/i)
              || url.replace(/[?#].*$/, "").replace(/\/+$/, "").match(/\/([^/]+)$/);
       if (f && !/^(www\.|https?:)/i.test(f[1])) raw = f[1];
     }
@@ -1133,13 +1134,29 @@ function runPaste() {
     if (/,\s/.test(t)) return false;
     return t.split(/\s+/).length <= 5;
   };
+  // A mail client turns every link into `[www.site/?x](https://www.site/?x)`;
+  // such a line is a link on its own line just as a bare URL is.
+  const isLinkOnly = (l) => isUrlOnly(l) || /^\s*\[[^\]]*\]\(\s*https?:\/\/[^)\s]+\s*\)\s*$/.test(l);
+  // A heading ends in a colon — "300x600 mobile:" — and speaks for every link
+  // under it until the next heading. The nearest-line rule alone gave the
+  // first link the label and left the other two nameless, and carried nothing
+  // onto a link written the way a mail client writes it: three 300x600 mobile
+  // tests opened as desktop pages.
+  const isHeading = (l) => /:\s*$/.test(l.trim()) && looksLikeName(l.trim().replace(/:\s*$/, ""));
+  let heading = "";
   const units = lines.map((line, i) => {
     let label = "";
-    if (isUrlOnly(line)) {
+    if (isHeading(line)) heading = line.trim().replace(/:\s*$/, "");
+    if (isLinkOnly(line)) {
       for (let j = i - 1; j >= 0 && i - j <= 3; j--) {
-        if (looksLikeName(lines[j])) { label = lines[j].trim(); break; }
-        if (lines[j].trim()) break;      // something else sits in between
+        if (isLinkOnly(lines[j])) break;       // the line above is a link, not a name
+        if (looksLikeName(lines[j]) && !isHeading(lines[j])) { label = lines[j].trim(); break; }
+        if (lines[j].trim() && !isHeading(lines[j])) break;   // something else sits in between
+        if (isHeading(lines[j])) break;
       }
+      if (!label) label = heading;
+    } else if (line.trim() && !isHeading(line)) {
+      heading = "";                            // anything else ends a heading's reach
     }
     return {
       text: label ? label + " " + line : line,
