@@ -32,6 +32,18 @@ defaults:
   settle_after_consent: 3
   scroll_passes: 6
   scroll_step: 500
+  # While waiting for the impression, walk the page a screen at a time instead
+  # of sitting at its top. dziennik.pl renders a below-the-fold slot only once
+  # it is near the viewport, and the creative's impression fires on render: a
+  # run parked at y=0 for 260s reported a correctly served 1140x600 as not
+  # firing. `patrol: false` keeps the old scroll-once-then-wait-at-the-top.
+  patrol: true
+  patrol_dwell: 2       # seconds each screen is held
+  patrol_screens: 12    # how deep a pass goes; listings that keep loading have no bottom
+  # Seconds into a run by which the strategy hands the page back. The backend
+  # kills a target at 420s and the result goes with it; the rest is for the
+  # DOM scan, the screenshot and writing the HAR.
+  run_budget: 380
   click: true           # attempt click verification after an impression
   headless: true
 
@@ -50,6 +62,10 @@ profiles:
     # 457786509 fired just after a 200s wait had given up. 260s; a scan with
     # the sheet loaded stops as soon as ours appears, so only pages where it
     # never comes pay for the extra minute.
+    # Caveat: those times were taken while the wait slept without letting
+    # Playwright deliver events, so everything that fired during it was
+    # stamped at its end (server clocks put the 147-218s hits at 17-19s).
+    # Re-measure with the pumped wait and the patrol before lowering this.
     patience: 260
     scroll_passes: 8
 

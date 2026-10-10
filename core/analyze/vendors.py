@@ -206,7 +206,55 @@ VENDORS = [ADFORM, CM360, AbtShield(), DoubleVerify(), IAS()]
 SERVING_VENDORS = {"Adform", "CM360"}
 
 
-def classify(url):
+def serving_vendors_of(ids):
+    """The serving vendors a set of bare ids belongs to, told by their shape:
+    an Adform banner id (bn) runs to 8 digits — 90565344 — and a CM360
+    placement id to 9 — 457786509. A sheet's ids carry no vendor of their own,
+    and before any of them fires nothing else says which it is."""
+    out = set()
+    for i in ids or ():
+        s = str(i)
+        if s.isdigit():
+            out.add("CM360" if len(s) >= 9 else "Adform")
+    return out
+
+
+# The landing address of an Ad Manager click (`adclick.g.doubleclick.net/pcs/
+# click?…&adurl=…`, `googleadservices.com/pagead/aclk?…&adurl=…`).
+_ADURL = re.compile(r"[?&;]adurl=([^&#]*)")
+
+
+def _wrapped(url):
+    """The tracker inside an `adurl=` parameter, decoded, or None.
+
+    Vendor.classify already reads a half-encoded adurl (host plain, `%3Fbn%3D`
+    encoded). Ad Manager also hands the whole address over encoded —
+    `adurl=https%3A%2F%2Ftrack.adform.net%2FC%2F%3Fbn%3D90565355` — and then no
+    vendor's path substring is in the URL at all, so a click on the campaign's
+    own creative read as nobody's.
+
+    Only on a click endpoint (`/pcs/click`, `/aclk`, `/preview/trackclk`):
+    Ad Manager's view pings (`/pcs/view`) carry `adurl=` as well, and reading
+    one of those as the click it names would invent a click nobody made.
+    """
+    url = url or ""
+    # The path alone: every one of these hosts is …doubleclick.net.
+    m = re.match(r"^[a-z][a-z0-9+.-]*://[^/?#]*([^?#]*)", url, re.I)
+    path = (m.group(1) if m else "").lower()
+    if "click" not in path and "clk" not in path:
+        return None
+    m = _ADURL.search(url)
+    if not m or "%" not in m.group(1):
+        return None
+    inner = m.group(1)
+    for _ in range(3):              # %253A arrives too: encoded once more
+        if "%" not in inner:
+            break
+        inner = unquote(inner)
+    return inner if "//" in inner else None
+
+
+def classify(url, _depth=0):
     """-> list of (vendor_name, kind, id) — a URL can only match one vendor in
     practice, but the list keeps callers simple."""
     out = []
@@ -219,4 +267,8 @@ def classify(url):
             continue
         if kind:
             out.append((v.name, kind, ident))
+    if not out and _depth < 2:
+        inner = _wrapped(url)
+        if inner:
+            return classify(inner, _depth + 1)
     return out

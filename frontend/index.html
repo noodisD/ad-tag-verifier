@@ -816,7 +816,11 @@ function previewVariant(url) {
 // mobile, and the backend defaults to desktop when told nothing — so a
 // `creName=mobile` link was being opened in a 1400px window, where the mobile
 // creative cannot serve and the run reports a tag that is fine as missing.
-const MOBILE_HINTS = ["mobile", "navik", "smartfon", "phone", "interstitial", "mob_",
+// "mobile" anywhere but inside "automobile". Requiring a non-letter before it
+// lost the bank client's own camelCase names (`300x600-CommercialBreakMobile`) and every
+// percent-encoded separator, whose code ends in a letter (`%2FMobile_…`).
+const MOBILE_HINTS = [/(?<!auto)mobile/,
+                      "navik", "smartfon", "phone", "interstitial", "mob_",
                       "version=cbm",
                       // The publisher's own mobile host: opening m.olx.pl in a
                       // desktop window tests the wrong page.
@@ -828,9 +832,33 @@ const MOBILE_HINTS = ["mobile", "navik", "smartfon", "phone", "interstitial", "m
 const MOBILE_SIZES = ["320x480","480x320","320x100","320x50","300x50","336x480",
                       "640x100","640x200","640x360","640x960","640x1136"];
 
+// "mob" as a word of its own: WP's `creName=Faktoring_300x600_mob`, `…-mob`,
+// `mob_…`. The substring hint above only knew `mob_`, so the four money.pl
+// `_mob` previews opened in a 1400px window and their mobile creatives were
+// judged on a desktop page. A whole token only — split at anything that is
+// not a letter, and at a camelCase step — so "mobility" (money.pl's own menu)
+// and "automobile" stay out of it.
+function hasMobToken(s) {
+  return String(s || "").replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z]+/).some(w => w.toLowerCase() === "mob");
+}
+
+// What names the creative: the email's label, the parsed variant, and the
+// preview's own name for it (WP's creName, Infor's version). Never the host —
+// a host is not a creative name.
+function creativeNames(t) {
+  let url = t.url || "";
+  try { url = decodeURIComponent(url); } catch (e) { /* malformed escape */ }
+  const own = url.match(/[?&](?:creName|version)=([^&#]+)/gi) || [];
+  // A label line can carry a link of its own; its host is not a name either.
+  const label = s => String(s || "").replace(/(?:https?:)?\/\/\S+/gi, " ");
+  return [label(t.desc), label(t.variant)].concat(own.map(p => p.replace(/^[?&][^=]+=/, "")));
+}
+
 function guessViewport(t) {
   const hay = ((t.desc || "") + " " + (t.variant || "") + " " + t.url).toLowerCase();
-  if (MOBILE_HINTS.some(h => hay.includes(h))) return "mobile";
+  if (MOBILE_HINTS.some(h => typeof h === "string" ? hay.includes(h) : h.test(hay))) return "mobile";
+  if (creativeNames(t).some(hasMobToken)) return "mobile";
   if (t.size && MOBILE_SIZES.includes(t.size)) return "mobile";
   if (t.size && parseInt(t.size, 10) >= 700) return "desktop";
   return "desktop";
@@ -1254,18 +1282,90 @@ function onFile(file) {
 // clients take the table, Slack and Teams take the text, and neither has to
 // be reformatted by hand afterwards.
 
+// The vendors ticked in Step 2; none ticked means all of them. The report,
+// the scan list and the match table read it the same way, or one run gets two
+// verdicts.
+function pickedVendor(v) {
+  return !state.selectedVendors || !state.selectedVendors.size || state.selectedVendors.has(v);
+}
+
+// IDs the sheet does not book whose impression and click both fired on the
+// creative under test, working, with a tag nobody booked: money.pl's
+// Faktoring previews fire Adform 90626723–26, none of them in the sheet.
+// Only the backend can say so (`working_unbooked`) — it knows which click was
+// aimed at the creative and which vendors the sheet serves through. Read off
+// `kinds` instead, another advertiser's CM360 creative that took the click
+// on a portal page came out as ours, so a backend that does not name them
+// names none. Checked against the sheet loaded now, so a newer sheet that
+// does book the ID takes it back out.
+function workingUnbooked(r) {
+  const idx = sheetIndex();
+  if (!r || !Array.isArray(r.working_unbooked) || !Object.keys(idx).length) return [];
+  const booked = (v, id) => (MATCH_FIELDS[v] || []).some(f => ((((idx[v] || {})[f] || {})[id]) || []).length);
+  const out = [];
+  r.working_unbooked.forEach(w => {
+    if (!w || !w.vendor || w.id == null || w.id === "" || !pickedVendor(w.vendor)) return;
+    const id = String(w.id);
+    if (booked(w.vendor, id) || out.some(o => o.vendor === w.vendor && o.id === id)) return;
+    out.push({ vendor: w.vendor, id });
+  });
+  return out;
+}
+
+function workingUnbookedText(w) {
+  return `${w.vendor} ${w.id}: impression and click work, but the sheet does not book this ID`;
+}
+
+// Did anything the sheet books fire on this page, impression or click?
+function bookedFired(r) {
+  const idx = sheetIndex();
+  return MAIN_VENDORS.some(v => (MATCH_FIELDS[v] || []).some(f =>
+    ((((r || {}).vendors || {})[v] || {})[f] || []).some(val =>
+      ((((idx[v] || {})[f] || {})[val]) || []).length)));
+}
+
+// The sheet's tags that an ad response delivered and whose impression never
+// fired (the backend's `delivered_not_fired`): on dziennik.pl the ad server
+// answered bill_top with this campaign's creative, and the slot sat below the
+// fold the whole run. Null when the backend does not say — an older build,
+// whose words the report reads instead (isUnshown).
+function deliveredUnfired(r) {
+  if (!r || !Array.isArray(r.delivered_not_fired)) return null;
+  const out = [];
+  r.delivered_not_fired.forEach(d => {
+    if (!d || !d.vendor || d.id == null || d.id === "" || !pickedVendor(d.vendor)) return;
+    const id = String(d.id);
+    if (!out.some(o => o.vendor === d.vendor && o.id === id)) out.push({ vendor: d.vendor, id, slot: d.slot || "" });
+  });
+  return out;
+}
+
+// The run's own line for a delivered tag says its slot was in view: the tag
+// had its chance and did not fire, which is a defect, not "not viewed".
+function deliveredInView(r, list) {
+  return list.some(d => ((r || {}).diagnosis || []).some(x =>
+    String(x).startsWith(`${d.vendor} ${d.id} was delivered`) && !isUnshown(x)));
+}
+
+function deliveredText(r, list) {
+  return (deliveredInView(r, list) ? "delivered, impression never fired — " : "delivered, not viewed — ")
+    + list.map(d => `${d.vendor} ${d.id}` + (d.slot ? ` in ${d.slot}` : "")).join("; ");
+}
+
 function reportRows() {
   const out = [];
   const idx = sheetIndex();
   const haveSheet = Object.keys(idx).length > 0;
-  const picked = state.selectedVendors && state.selectedVendors.size
-    ? v => state.selectedVendors.has(v) : () => true;
   state.testTargets.forEach(t => {
     const r = state.scan[t.tid];
     // A test the report leaves out reads as a test that passed. Pages where
     // nothing fired, runs that errored and pages never scanned all get a line.
+    // The booked creative that was delivered and never on screen heads its
+    // row by name: "no tags fired" sent people looking for a missing tag.
+    const delivered = deliveredUnfired(r);
+    const lead = delivered && delivered.length ? deliveredText(r, delivered) : "";
     const base = { test: t.desc || targetLabel(t), url: t.url, measurement: false,
-                   publisher: "—", ids: "—", sheet: "—",
+                   publisher: "—", ids: "—", sheet: "—", delivered,
                    diag: (r && r.diagnosis) || [] };
     if (!r || r.status === "idle" || r.status === "pending" || r.status === "running") {
       out.push({ ...base, vendor: "—", imp: "not scanned", clk: "—", missing: true });
@@ -1277,15 +1377,16 @@ function reportRows() {
       return;
     }
     const kinds = r.kinds || {};
-    const vendorsHere = Object.keys(r.vendors || {}).filter(picked);
+    const vendorsHere = Object.keys(r.vendors || {}).filter(pickedVendor);
     if (!vendorsHere.length) {
       const seen = Object.keys(r.vendors || {});
       out.push({ ...base, vendor: "—", imp: "no", clk: "no", missing: true,
-                 sheet: seen.length ? "no campaign tags fired (other tags on the page: " + seen.join(", ") + ")"
-                                    : "no tags fired" });
+                 sheet: lead ? lead + (seen.length ? " (other tags on the page: " + seen.join(", ") + ")" : "")
+                      : seen.length ? "no campaign tags fired (other tags on the page: " + seen.join(", ") + ")"
+                      : "no tags fired" });
     }
     let firstServing = null;
-    const foreignServing = [];
+    const foreignServing = [];      // [vendor, [ids]]
     vendorsHere.forEach(vendor => {
       const k = kinds[vendor] || {};
       const measurement = VENDOR_ROLE[vendor] === "measurement";
@@ -1312,7 +1413,7 @@ function reportRows() {
       // one where it fired and was mis-implemented. It is listed as what else
       // was there.
       if (haveSheet && !measurement && !inSheet.length) {
-        foreignServing.push(`${vendor} ${[...new Set(ids)].join(", ")}`);
+        foreignServing.push([vendor, [...new Set(ids.map(String))]]);
         return;
       }
       // Impression and click belong to an ID, not to a vendor. Crediting the
@@ -1360,12 +1461,31 @@ function reportRows() {
       out.push(row);
       if (!measurement && !firstServing) firstServing = row;
     });
+    const listed = ([v, ids]) => `${v} ${ids.join(", ")}`;
     if (firstServing && foreignServing.length) {
-      firstServing.others = [firstServing.others, ...foreignServing].filter(Boolean).join("; ");
+      firstServing.others = [firstServing.others, ...foreignServing.map(listed)].filter(Boolean).join("; ");
     } else if (!firstServing && vendorsHere.length) {
-      out.push({ ...base, vendor: "—", imp: "no", clk: "no", missing: true,
-                 sheet: "no tags from this campaign fired"
-                        + (foreignServing.length ? " — other tags on the page: " + foreignServing.join("; ") : "") });
+      // None of the booked tags fired. When an ID the sheet does not book
+      // fired its impression *and* its click, the creative under test works
+      // and carries a tag nobody booked — the money.pl Faktoring previews.
+      // Filed under "other tags on the page" it read as a page where nothing
+      // of ours ran at all.
+      // `listsOthers`: the row's own line names the other tags by ID, so
+      // the backend's line saying the same is not repeated under it.
+      const working = workingUnbooked(r);
+      const rest = foreignServing
+        .map(([v, ids]) => [v, ids.filter(i => !working.some(w => w.vendor === v && w.id === i))])
+        .filter(([, ids]) => ids.length).map(listed);
+      out.push(working.length
+        ? { ...base, vendor: [...new Set(working.map(w => w.vendor))].join(" / "),
+            ids: working.map(w => w.id).join(", "), unbooked: working,
+            imp: "yes", clk: "yes", missing: true, listsOthers: rest.length > 0,
+            sheet: working.map(workingUnbookedText).join("; ")
+                   + (rest.length ? " — other tags on the page: " + rest.join("; ") : "") }
+        : { ...base, vendor: "—", imp: "no", clk: "no", missing: true,
+            listsOthers: foreignServing.length > 0,
+            sheet: (lead || "no tags from this campaign fired")
+                   + (foreignServing.length ? " — other tags on the page: " + foreignServing.map(listed).join("; ") : "") });
     }
     missingMeasurement(r).forEach(m => out.push({
       ...base,
@@ -1429,15 +1549,66 @@ function blockProblems(g, r) {
   g.meas.forEach(m => (m.problems || []).forEach(x => out.push(x)));
   g.cols.filter(c => c.value === "not seen" && c.booked).forEach(c =>
     out.push(`the sheet books ${c.label} for this placement, but no ${c.label} beacon fired`));
-  if (r.missing || r.imp !== "yes" || r.clk !== "yes") (r.diag || []).forEach(x => out.push(x));
+  // The backend's lines go out as written, bar two the row's own line already
+  // says: the unbooked ID that works, and the other tags beside it. Said
+  // again they read as three findings. (Whether a click "landed on another
+  // advertiser" is the backend's call — it drops that line itself when the
+  // click was the working unbooked ID.)
+  if (r.missing || r.imp !== "yes" || r.clk !== "yes") (r.diag || []).forEach(x => {
+    if (r.listsOthers && OTHERS_LINE.test(x)) return;
+    if ((r.unbooked || []).some(w =>
+      x.startsWith(`the creative works — impression and click both carry ${w.vendor} ${w.id} — `))) return;
+    out.push(x);
+  });
   return [...new Set(out)];
+}
+
+const OTHERS_LINE = /^(?:other tags that fired on the page are not in the sheet|tags fired on the page, but none this campaign books): /;
+
+// "Delivered, never shown": the ad server sent the creative with the booked
+// tag in it, and it never came on screen, so its impression could not fire.
+// The run did not get to look — that is "??", not a missing tag. A delivered
+// tag that sat in view and still never fired is a defect (the DV360 tracker
+// pasted as plain text is on a one-screen preview), so a line that says the
+// slot was in view does not count.
+function isUnshown(line) {
+  const s = String(line);
+  if (!/\bdelivered\b/i.test(s) || /plain text/i.test(s)) return false;
+  if (!/\bimpression (?:was |has )?never (?:been )?(?:fired|requested)\b|\bnot viewed\b|\bnever shown\b/i
+      .test(s)) return false;
+  // The backend writes "the slot was not rendered/in view during the test":
+  // a negation reaches across "rendered/" and "rendered or".
+  const inView = /\bin(?:to)? view\b/i.test(s)
+    && !/\b(?:never|not)\s+(?:(?:been|brought|scrolled|came|come|rendered|shown)\s*(?:\/|\bor\b)?\s*)*in(?:to)? view\b/i
+      .test(s);
+  return !inView;
+}
+
+// What comes with a creative that was never on screen, and says nothing more
+// about the tag: nothing of ours fired, so nothing of ours could be clicked,
+// and what did fire belongs to others.
+const UNSHOWN_ALSO = new RegExp("^(?:none of the sheet's placements fired|no impression fired"
+  + "|no clickable creative|the vision check|the creative was clicked|no player on screen"
+  + "|the creative stayed off-screen|the click landed on another advertiser|a click left the test page"
+  + "|the page took longer than|tags fired on the page, but none this campaign books"
+  + "|other tags that fired on the page are not in the sheet)|elsewhere on the page", "i");
+
+// A row whose only finding is "delivered, never shown". The backend names the
+// delivery outright (`delivered_not_fired`); an older build only in words.
+// Either way its own line for the tag decides: one that says the slot was in
+// view is not "never shown".
+function unshownOnly(r, probs) {
+  if (r.measurement || r.unbooked || r.imp === "yes" || (r.problems || []).length) return false;
+  const named = Array.isArray(r.delivered) ? r.delivered.length > 0 : probs.some(isUnshown);
+  return named && probs.every(p => isUnshown(p) || UNSHOWN_ALSO.test(p));
 }
 
 function reportText(rows) {
   const groups = reportBlocks(rows);
   const serving = rows.filter(r => !r.measurement && !r.missing);
   const ok = serving.filter(r => r.imp === "yes" && r.clk === "yes" && !(r.problems || []).length).length;
-  const empty = rows.filter(r => r.missing).length;
+  // An unbooked ID that worked is something to report, if not a booked tag.
+  const empty = rows.filter(r => r.missing && !r.unbooked).length;
   const lines = [
     `Tag verification — ${state.testTargets.length} test page(s), ${serving.length} tag(s) observed`,
     `${ok} with both impression and click confirmed`
@@ -1445,6 +1616,7 @@ function reportText(rows) {
     "",
   ];
 
+  let unshown = false;
   groups.forEach(g => {
     const colText = g.cols.filter(c => c.value)
       .map(c => `${c.label}: ${c.value}`).join("   ");
@@ -1463,7 +1635,10 @@ function reportText(rows) {
     }
     g.serving.forEach(r => {
       const probs = blockProblems(g, r);
-      const mark = r.missing ? "!!"
+      const unsure = unshownOnly(r, probs);
+      if (unsure) unshown = true;
+      const mark = unsure ? "??"
+                 : r.missing ? "!!"
                  : (r.problems || []).length || anyMissing ? "!!"
                  : isOk(r) ? "OK"
                  : String(r.clk).startsWith("not tested") ? "??" : "!!";
@@ -1487,6 +1662,12 @@ function reportText(rows) {
     lines.push("\"not tested\" means the check could not click the creative — it is not");
     lines.push("evidence that the click tag is missing.");
   }
+  // "Not in view" is what the run inferred, not what it watched: an
+  // out-of-page slot is never "in view" either. So it says what to check.
+  if (unshown) {
+    lines.push("\"??\" on a delivered creative: the ad server sent it, but the run never confirmed it on");
+    lines.push("screen — look at it in view before calling the tag missing.");
+  }
   return lines.join(String.fromCharCode(10));
 }
 
@@ -1503,21 +1684,28 @@ function reportHtml(rows) {
       // to attempt is unknown, not failed — colouring it like a defect is how a
       // correct placement gets raised with a publisher.
       const colMissing = g.cols.some(c => c.value === "not seen" && c.booked);
-      const failed = r.missing || (r.problems || []).length || colMissing
-                     || (!r.measurement && (r.imp === "no" || r.clk === "no"));
-      const unknown = !r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed;
+      const probs = g.serving.length ? blockProblems(g, r) : [];
+      // Delivered and never on screen is unknown, like an untested click.
+      const unsure = g.serving.length > 0 && unshownOnly(r, probs);
+      const failed = !unsure && (r.missing || (r.problems || []).length || colMissing
+                     || (!r.measurement && (r.imp === "no" || r.clk === "no")));
+      const unknown = unsure || (!r.measurement && (r.imp !== "yes" || r.clk !== "yes") && !failed);
       const tint = failed ? "background:#f8e9e7;" : unknown ? "background:#f6efdd;" : "";
       const colCells = g.cols.map(c =>
         `<td style="${cell}${tint}${c.value === "not seen" ? "color:#a33;font-weight:bold;" : ""}">${
           escapeHtml(c.value || "—")}</td>`).join("");
-      const probs = g.serving.length ? blockProblems(g, r) : [];
-      const probCell = `<td style="${cell}${tint}${probs.length ? "color:#a33;" : ""}">${
+      const probCell = `<td style="${cell}${tint}${probs.length && !unsure ? "color:#a33;" : ""}">${
         probs.length ? probs.map(escapeHtml).join("<br>") : "—"}</td>`;
+      // A row for an ID the sheet does not book, or for a delivered one that
+      // never fired, still names the ID.
+      const named = r.unbooked || (r.delivered && r.delivered.length ? r.delivered : null);
+      const idText = !r.missing ? r.vendor + " " + r.ids
+        : named ? named.map(w => w.vendor + " " + w.id).join(", ") : "—";
       return `<tr>
       <td style="${cell}${tint}">${escapeHtml(r.publisher)}</td>
       <td style="${cell}${tint}"><b>${escapeHtml(r.test)}</b><br>
         <span style="font-size:11px;color:#666;">${escapeHtml(r.url)}</span></td>
-      <td style="${cell}${tint}">${escapeHtml(r.missing ? "—" : r.vendor + " " + r.ids)}${r.others
+      <td style="${cell}${tint}">${escapeHtml(idText)}${r.others
         ? `<br><span style="font-size:11px;color:#666;">also on page: ${escapeHtml(r.others)}</span>` : ""}</td>
       <td style="${cell}${tint}">${escapeHtml(r.missing && r.sheet === "—" ? "no tags fired" : r.sheet)}</td>
       <td style="${cell}${tint}">${escapeHtml(r.imp)}</td>
@@ -2031,8 +2219,20 @@ function renderScan() {
     } else if (Object.keys(r.vendors || {}).length) {
       doneText = "measurement only";
     }
+    // Nothing the sheet books fired, but an ID it does not book worked end to
+    // end. Green "impression + click" said the opposite of what the report
+    // will say, so the row says what it is.
+    const working = r.status === "done" && !bookedFired(r) ? workingUnbooked(r) : [];
+    if (working.length) doneText = "ID not in sheet";
+    // The booked creative was delivered and never on screen. Red "no tags
+    // fired" said the tag was missing, where the report says "??"; the same
+    // test, by the same rule (unshownOnly), reads the same here.
+    const delivered = (r.status === "done" || r.status === "none") && !working.length && !bookedFired(r)
+      ? deliveredUnfired(r) || [] : [];
+    const notViewed = delivered.length > 0 && unshownOnly({ delivered }, r.diagnosis || []);
+    if (notViewed) doneText = "delivered, not viewed";
     const text = { idle: "not scanned", pending: "queued", running: "loading page…",
-                   done: doneText, none: "no tags fired", error: "error" }[r.status] || r.status;
+                   done: doneText, none: notViewed ? doneText : "no tags fired", error: "error" }[r.status] || r.status;
     // Green only when the click tracked too. An impression on its own is a
     // half-working placement, and painting it as a pass is how a missing
     // click tag reaches the end of a campaign unnoticed.
@@ -2043,8 +2243,8 @@ function renderScan() {
       ? withClick.length < serving.length
       : anyVendor > 0;
     const pill = { idle: "pending", pending: "pending", running: "running",
-                   done: clickShort ? "warn" : "pass",
-                   none: "fail", error: "error" }[r.status] || "pending";
+                   done: working.length ? "fail" : notViewed || clickShort ? "warn" : "pass",
+                   none: notViewed ? "warn" : "fail", error: "error" }[r.status] || "pending";
     // Show which half fired. A serving vendor with an impression and no click
     // is the single most common real defect on these campaigns, and it used to
     // look identical here to one that works.
@@ -2080,7 +2280,10 @@ function renderScan() {
       + [...new Set((r.markup_defects || []).filter(d => d.tag === "script").map(d => d.vendor))].map(v =>
         `<span class="chip-found markup bad" title="the tag is in the creative with its attribute wrapped in doubled quotes, so its address is empty and the browser never requests it">${escapeHtml(v)} · tag malformed</span>`).join("");
     const detail = r.status === "error" && r.detail
-      ? `<div class="match-detail">${escapeHtml(r.detail)}</div>` : "";
+      ? `<div class="match-detail">${escapeHtml(r.detail)}</div>`
+      : working.length ? `<div class="match-detail">${escapeHtml(working.map(workingUnbookedText).join("; "))}</div>`
+      : delivered.length ? `<div class="match-detail">${escapeHtml(deliveredText(r, delivered))}</div>`
+      : "";
     const isWatch = state.watchIds.includes(t.tid);
     return `
       <div class="scan-row">
@@ -2192,6 +2395,9 @@ function renderMatch() {
         });
       });
     });
+    // Nothing booked fired; an unbooked ID that worked end to end is named as
+    // such rather than as one more "not in sheet".
+    const working = haveSheet && !bookedFired(r) ? workingUnbooked(r) : [];
 
     const perVendor = vendors.map(vendor => {
       const found = r.vendors[vendor];
@@ -2226,7 +2432,10 @@ function renderMatch() {
         return values.map(val => {
           const hits = (((idx[vendor] || {})[f] || {})[val]) || [];
           if (!haveSheet) return { f, val, cls: "", note: "found on page" };
-          if (!hits.length) return { f, val, cls: "bad", note: "not in sheet" };
+          if (!hits.length) {
+            const w = working.find(x => x.vendor === vendor && x.id === String(val));
+            return { f, val, cls: "bad", note: w ? workingUnbookedText(w) : "not in sheet" };
+          }
           // The ID is the identity, and the sheet has it. What remains worth
           // checking is the format, and both sides state it in writing.
           //

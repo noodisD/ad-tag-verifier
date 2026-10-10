@@ -96,7 +96,7 @@ def _click_attempted(meta):
     return None      # nothing logged either way
 
 
-def _fired(meta):
+def _fired(meta, har=None):
     """Beacons re-derived from the HAR, the same source the verdict uses.
 
     The recorder's in-memory list misses requests made from a tab the click
@@ -104,14 +104,55 @@ def _fired(meta):
     `/C/?bn=89750126` requests that the recorder never saw. Reading the HAR
     here means the table the UI draws and the verdict beside it cannot
     disagree about whether the click fired.
+
+    `har`, when the caller has already parsed it, saves reading it again.
     """
-    har = Path(meta.get("_dir", ".")) / meta.get("har", "run.har")
-    if har.exists():
+    if har is not None:
         try:
-            return findings.beacons_from_har(har)
+            return findings.beacons_from_har(har=har)
         except Exception:
             pass
+    else:
+        path = Path(meta.get("_dir", ".")) / meta.get("har", "run.har")
+        if path.exists():
+            try:
+                return findings.beacons_from_har(path)
+            except Exception:
+                pass
     return [b for b in meta.get("beacons", []) if b.get("evidence") == "fired"]
+
+
+# Click paths that aimed at the creative under test rather than at whatever
+# ad frame was there: the model was asked for this advertiser's creative, and
+# "unbooked" clicks the frame of an impression from the sheet's own vendor.
+# A frame or link picked for merely being an ad (f8a5/t4 clicked a CM360
+# pre-roll's frame on dziennik.pl) says nothing about whose creative it was.
+_AIMED = ("model", "unbooked")
+
+
+def _unbooked_clicks(meta, booked):
+    """-> [(source, id, judged_other)]: clicks whose beacon carried an id the
+    sheet does not book, in the order made. Two shapes in the log: "click
+    tracked for a DIFFERENT id (X)" (judged another advertiser's), whose source
+    is the "<source> click at (x,y)" line just before it, and "click confirmed
+    by beacon X (source)" for a click aimed at an unbooked id's own frame."""
+    out, source = [], None
+    for e in meta.get("events", []) or []:
+        e = str(e)
+        m = re.match(r"(\w+) click at \(", e)
+        if m:
+            source = m.group(1)
+        m = re.search(r"click tracked for a DIFFERENT id \(([^)]+)\)", e)
+        if m:
+            out.append((source, m.group(1), True))
+        m = re.search(r"click confirmed by beacon (\S+) \((\w+)\)", e)
+        if m and m.group(1) not in booked:
+            out.append((m.group(2), m.group(1), False))
+    return out
+
+
+def _ids(pairs, limit=3):
+    return ", ".join(f"{v} {i}" for v, i in pairs[:limit])
 
 
 def _group(beacons, key):
@@ -188,7 +229,10 @@ def verify(browser, target, run_dir):
 def discover(browser, target, run_dir):
     """-> the /discover result shape for one target."""
     meta, _ = _run(target, browser, run_dir)
-    fired = _fired(meta)
+    # Parsed once and handed to every reader below: a portal's HAR is 40-60 MB.
+    har_path = Path(meta.get("_dir", ".")) / meta.get("har", "run.har")
+    har = findings.read_har(har_path) if har_path.exists() else None
+    fired = _fired(meta, har)
 
     found = {}
     for b in fired:
@@ -223,44 +267,106 @@ def discover(browser, target, run_dir):
             bucket.append(b["id"])
 
     # Tags the creative delivered but the browser could not load (an attribute
-    # wrapped in doubled quotes leaves a script with no address). Without this
-    # the page reads as "that tag never fired", which sends the publisher off to
-    # look for a tag nobody placed instead of one placed wrongly. Only those
-    # that really did not fire are reported.
+    # wrapped in doubled quotes leaves a script with no address; an address
+    # pasted as plain text is never requested at all). Without this the page
+    # reads as "that tag never fired", which sends the publisher off to look
+    # for a tag nobody placed instead of one placed wrongly. Only those that
+    # really did not fire are reported — by kind too: on the DV360 previews
+    # the click tracker worked while the impression pasted beside it never
+    # could, and the same bn on both hid the broken one.
     defects = []
-    har = Path(meta.get("_dir", ".")) / meta.get("har", "run.har")
-    if har.exists():
-        fired_ids = {(b["vendor"], b["id"]) for b in fired}
-        defects = [d for d in findings.markup_defects(har)
-                   if (d["vendor"], d["id"]) not in fired_ids]
+    if har is not None:
+        fired_ids = {(b["vendor"], b["kind"], b["id"]) for b in fired}
+        defects = [d for d in findings.markup_defects(har=har)
+                   if (d["vendor"], d["kind"], d["id"]) not in fired_ids]
 
     # Why a step did not happen, in words: read from what the capture logged
     # and from the HAR, so the report can name the cause instead of leaving
     # "no tag fired" to be interpreted.
-    diagnosis = findings.diagnose(meta, har_path=har if har.exists() else None)
+    diagnosis = findings.diagnose(meta, har=har)
 
-    # When the sheet's ids are known and none of them fired, say what did.
-    # Two very different situations hide behind "the booked tag did not fire":
-    # the creative never came, or it came carrying a different placement's tag.
-    # An Ad Manager preview names its creative, so the response that delivered it
-    # can be read directly.
     wanted = {str(i) for i in (target.get("wait_for") or []) if i}
     serving_fired = sorted({(b["vendor"], b["id"]) for b in fired
                             if b["vendor"] in vendors.SERVING_VENDORS
                             and b["kind"] == vendors.IMPRESSION and b.get("id")})
-    if wanted and not any(i in wanted for _v, i in serving_fired) and har.exists():
-        cid = re.search(r"[?&]creativeId=(\d+)", target.get("url", ""))
-        carried = [(v, i) for v, k, i in findings.creative_tags(har, cid.group(1) if cid else None)
+    booked_fired = [i for _v, i in serving_fired if i in wanted]
+    top = []
+
+    # A broken serving tag is the cause, not a detail: name it first. With a
+    # sheet, only the campaign's own ids; anything else on a portal is some
+    # other advertiser's problem.
+    broken = [d for d in defects
+              if d["vendor"] in vendors.SERVING_VENDORS and d["kind"] == vendors.IMPRESSION
+              and (not wanted or d["id"] in wanted)]
+    for d in broken[:3]:
+        top.append(f"{d['vendor']} {d['id']} impression: {d['problem']}")
+
+    # When the sheet's ids are known and none of them fired, say what did.
+    # Two very different situations hide behind "the booked tag did not fire":
+    # the creative never came, or it came carrying a different placement's tag.
+    # A preview link names its creative, so the response that delivered it can
+    # be read directly.
+    delivered_not_fired, working_unbooked = [], []
+    if wanted and not booked_fired and har is not None:
+        cid = findings.previewed_creative(target.get("url", ""))
+        carried = [(v, i) for v, k, i in findings.creative_tags(creative_id=cid, har=har)
                    if v in vendors.SERVING_VENDORS and k == vendors.IMPRESSION and i not in wanted]
         if carried:
-            diagnosis = [d for d in diagnosis if not d.startswith(findings.NOTHING_FIRED)]
-            diagnosis.insert(0, f"the previewed creative (creativeId {cid.group(1)}) carries "
-                                + ", ".join(f"{v} {i}" for v, i in carried[:3])
-                                + ", which the sheet does not book")
-        elif serving_fired:
-            diagnosis = [d for d in diagnosis if not d.startswith(findings.NOTHING_FIRED)]
-            diagnosis.insert(0, "tags fired on the page, but none this campaign books: "
-                                + ", ".join(f"{v} {i}" for v, i in serving_fired[:3]))
+            top.append(f"the previewed creative (creativeId {cid}) carries {_ids(carried)}"
+                       ", which the sheet does not book")
+
+        # The campaign's creative reached a slot and was never shown — on
+        # dziennik.pl the ad server answered bill_top with it, and Ad Manager
+        # renders that slot only near the viewport. "None of the sheet's
+        # placements fired" sent people looking for a missing tag.
+        broken_ids = {(d["vendor"], d["id"]) for d in defects}
+        delivered_not_fired = [d for d in findings.delivered(har=har, ids=wanted)
+                               if (d["vendor"], d["id"]) not in broken_ids]
+        for d in delivered_not_fired[:3]:
+            where = f"to slot {d['slot']}" if d.get("slot") else f"by {d['source']}"
+            what = "slot" if d.get("slot") else "creative"
+            top.append(f"{d['vendor']} {d['id']} was delivered {where} but its impression "
+                       f"never fired — the {what} was not rendered/in view during the test")
+
+        # A click judged "another advertiser's" because the sheet does not
+        # book its id, while the same id's impression fired too: the creative
+        # works, with a tag the sheet lacks (money.pl's WP previews, Adform
+        # 90626723-26). Only for clicks aimed at the creative under test, and
+        # never for a genuinely different id — click_confirmed's verdict
+        # stands for those.
+        clicks = _unbooked_clicks(meta, wanted)
+        for source, ident, _other in clicks:
+            own = creative_click.own_unbooked(fired, ident, wanted) if source in _AIMED else None
+            if own and {"vendor": own[0], "id": own[1]} not in working_unbooked:
+                working_unbooked.append({"vendor": own[0], "id": own[1]})
+                top.append(f"the creative works — impression and click both carry "
+                           f"{own[0]} {own[1]} — but the sheet does not book {own[1]}")
+        # The "another advertiser" line goes only when every click judged so
+        # is one of these; a click that really did land elsewhere keeps it.
+        mine = {w["id"] for w in working_unbooked}
+        judged = [i for _s, i, other in clicks if other]
+        if judged and all(i in mine for i in judged):
+            diagnosis = [d for d in diagnosis
+                         if d != "the click landed on another advertiser's creative"]
+
+        others = [p for p in serving_fired
+                  if p not in {(w["vendor"], w["id"]) for w in working_unbooked}]
+        if others and not carried:
+            top.append(("other tags that fired on the page are not in the sheet: "
+                        if delivered_not_fired or working_unbooked
+                        else "tags fired on the page, but none this campaign books: ")
+                       + _ids(others))
+
+    # "None of the sheet's placements fired" is the wait's verdict, reached
+    # from what it had seen by then. When the HAR shows a booked impression
+    # after all (the vision pass scrolled it into view: dziennik.pl, 90571117
+    # at 305s), or something above already explains why none fired, the line
+    # contradicts the report it sits in. Without a sheet nothing above is
+    # about this campaign — a broken tag on a portal may be anybody's — so
+    # "no impression fired" stays.
+    if booked_fired or (wanted and top):
+        diagnosis = [d for d in diagnosis if not d.startswith(findings.NOTHING_FIRED)]
+    diagnosis = top + [d for d in diagnosis if d not in top]
 
     status = "error" if meta.get("error") else ("done" if found else "none")
     return {
@@ -269,6 +375,12 @@ def discover(browser, target, run_dir):
         "kinds": kinds,
         "markup_defects": defects,
         "diagnosis": diagnosis,
+        # Sheet ids an ad response delivered whose impression was never
+        # requested: [{vendor, id, slot, source}].
+        "delivered_not_fired": delivered_not_fired,
+        # Ids the sheet does not book whose impression and click both fired on
+        # the creative under test: [{vendor, id}].
+        "working_unbooked": working_unbooked,
         "click_attempted": _click_attempted(meta),
         "click_result": meta.get("click_result"),
         "vendors_in_markup": in_markup,

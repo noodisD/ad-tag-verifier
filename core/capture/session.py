@@ -44,6 +44,25 @@ class Recorder:
         # reliable handle on which slot the creative is in — so it is kept
         # alongside, keyed the same way.
         self._frames = {}
+        # The page waits are made on. See sleep().
+        self.page = None
+
+    def bind(self, page):
+        """Wait on `page` from now on, so beacons arrive while the run waits."""
+        self.page = page
+
+    def sleep(self, seconds):
+        """Pause without going deaf.
+
+        Playwright's sync API hands events to Python only while a call into it
+        is running. The wait below used to be time.sleep(), so a beacon fired
+        during it was delivered — and stamped — only when the wait ended: on
+        dziennik.pl the Commercial Break's impression fired at 13s and was
+        recorded at 274s, and no wait could ever end on a beacon that arrived
+        after it began. Waiting on the bound page dispatches as it goes.
+        Unbound, or once the page is gone, this is a plain sleep.
+        """
+        consent.pause(self.page, seconds)
 
     def attach(self, ctx):
         ctx.on("request", self._on_request)
@@ -114,8 +133,9 @@ class Recorder:
         while time.time() < deadline:
             if predicate():
                 return True
-            time.sleep(poll)
-        return False
+            self.sleep(min(poll, max(0.0, deadline - time.time())))
+        # What arrived during the last poll counts too.
+        return bool(predicate())
 
     def serving_ids(self):
         return sorted({b["id"] for b in self.beacons
@@ -124,11 +144,20 @@ class Recorder:
 
     def impression_frame(self, ident=None):
         """The frame that fired an impression — the handle used to locate the
-        creative for a click."""
+        creative for a click.
+
+        `ident` is one id or a set of them. Only None means "anybody's": with
+        a sheet loaded, the first impression of anyone is a competitor's frame
+        as often as not (dziennik.pl: a click on the pre-roll's CM360 frame).
+        """
+        if ident is None or isinstance(ident, str):
+            wanted = {ident} if ident else None
+        else:
+            wanted = {str(i) for i in ident}
         for b in self.beacons:
             if b["kind"] != vendors.IMPRESSION or b["evidence"] != "fired":
                 continue
-            if ident and b["id"] != ident:
+            if wanted is not None and b["id"] not in wanted:
                 continue
             fr = self._frames.get((b["vendor"], b["kind"], b["id"]))
             if fr is not None:
@@ -168,16 +197,19 @@ def capture(target, browser, out_root, viewport="desktop", overrides=None):
         has_touch=vp.get("has_touch", False),
         locale="pl-PL",
         record_har_path=str(har_path),
-        # "minimal" keeps request URLs — all the analyzer needs — while
-        # dropping response bodies and cookies. A full HAR of one page run was
-        # 31 MB and carried session cookies; this is ~1% of that and is not a
-        # credential to be careful with.
+        # "minimal" leaves out what only replaying a page needs (timings,
+        # sizes, cookie detail). It does NOT drop response bodies — a portal's
+        # HAR is still 40-60 MB — and the verdict depends on them: what an ad
+        # response delivered but never fired (dziennik.pl's bill_top), tags
+        # broken in the creative's markup, the previewed creative's own tags.
+        # Do not trade them away for size.
         record_har_mode="minimal",
     )
 
     recorder = Recorder()
     recorder.attach(ctx)
     page = ctx.new_page()
+    recorder.bind(page)
 
     meta = {
         "id": target["id"],

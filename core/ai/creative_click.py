@@ -157,6 +157,44 @@ def click_confirmed(recorder, expected_id, since_index):
     return "unattributed", clicks[0].get("id")
 
 
+def own_unbooked(beacons, click_id, booked):
+    """Was a click judged "other_advertiser" really on the creative under test,
+    carrying an id the sheet does not book?
+
+    -> (vendor, id) or None. Yes only when the clicked id's own serving
+    impression fired on the page too (same vendor, same id), the sheet does not
+    book that id, none of the ids it does book fired at all — so there was no
+    campaign creative of the sheet's on the page for the click to have missed —
+    and the id is from the sheet's own serving vendor. Measured on money.pl's
+    WP previews of the Korpo-Q4 creatives: the creative fired Adform 90626723
+    and the click carried 90626723, an id the loaded sheet does not have. "The
+    click landed on another advertiser" was the wrong conclusion; a working tag
+    the sheet lacks is the right one. A CM360 pair on an Adform sheet is a
+    different advertiser's creative that happened to be clicked, and stays one.
+
+    click_confirmed is deliberately left as it is: it judges a click against
+    the ids it was told to expect, and this is a question about the sheet,
+    which the report answers. `beacons` are fired beacons (HAR-derived).
+    """
+    booked = {str(i) for i in (booked or ())}
+    if not click_id or str(click_id) in booked:
+        return None
+    kin = vendors.serving_vendors_of(booked)
+    fired = [b for b in beacons if b.get("evidence") == "fired"
+             and b.get("vendor") in vendors.SERVING_VENDORS]
+    if any(b.get("kind") == vendors.IMPRESSION and str(b.get("id")) in booked for b in fired):
+        return None
+    for imp in fired:
+        if imp.get("kind") != vendors.IMPRESSION or str(imp.get("id")) != str(click_id):
+            continue
+        if kin and imp.get("vendor") not in kin:
+            continue
+        if any(b.get("kind") == vendors.CLICK and str(b.get("id")) == str(click_id)
+               and b.get("vendor") == imp.get("vendor") for b in fired):
+            return imp["vendor"], str(click_id)
+    return None
+
+
 class VisionMatcher:
     """The `look` half of the model interface, alongside ai.match's `choose`.
 

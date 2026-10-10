@@ -88,6 +88,32 @@ _STILL = r"""(phrases) => {
 }"""
 
 
+def pause(page, seconds, slice_s=0.5):
+    """Wait `seconds` while Playwright keeps delivering events.
+
+    time.sleep() is not a wait as far as Playwright's sync API is concerned:
+    nothing it sends is dispatched until the next call into it, so every
+    request made while Python sleeps reaches the recorder (and the HAR clock)
+    in one burst afterwards. Measured on dziennik.pl: a pixel that fired at
+    13s was stamped 274s, because the run had spent the 260s in between
+    asleep — and a wait that cannot see anything arrive cannot end on it.
+    page.wait_for_timeout() waits in the driver and dispatches as it goes.
+
+    Sliced, so a page that closes mid-wait (watch mode, a crashed tab) costs
+    only the rest of the wait as a plain sleep, never an exception.
+    """
+    deadline = time.time() + seconds
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            return
+        try:
+            page.wait_for_timeout(min(left, slice_s) * 1000)
+        except Exception:
+            time.sleep(max(0.0, deadline - time.time()))
+            return
+
+
 def live_frames(page):
     """The page's frames that can be asked something right now.
 
@@ -115,7 +141,7 @@ def _click_top_frame(page):
                 page.mouse.click(cand["x"], cand["y"])
             except Exception:
                 continue
-            time.sleep(2)
+            pause(page, 2)
             if not still_up(page):
                 return cand["label"][:60]
     except Exception:
@@ -141,7 +167,7 @@ def accept(page, settle=3.0):
     `isTrusted=false` — and one that does leaves the page sitting behind the
     wall while the run reports consent as handled.
     """
-    time.sleep(settle)
+    pause(page, settle)
 
     label = _click_top_frame(page)
     if label:
@@ -157,7 +183,7 @@ def accept(page, settle=3.0):
                 frame.evaluate(
                     "(c) => { const el = document.elementFromPoint(c.x, c.y);"
                     "  if (el) el.click(); }", cand)
-                time.sleep(2)
+                pause(page, 2)
                 if not still_up(page):
                     return cand["label"][:60]
         except Exception:
@@ -169,7 +195,7 @@ def accept(page, settle=3.0):
                 btn = target.locator(sel).first
                 if btn.is_visible(timeout=400):
                     btn.click()
-                    time.sleep(2)
+                    pause(page, 2)
                     return f"selector:{sel}"
             except Exception:
                 pass
@@ -180,7 +206,7 @@ def accept(page, settle=3.0):
             label = _click_top_frame(page)
             if label:
                 return label
-        time.sleep(1)
+        pause(page, 1)
 
     return None
 

@@ -7,6 +7,8 @@ fired but what the tool did to make it fire.
 
 import re
 import time
+import uuid
+from urllib.parse import unquote
 
 from core.ai import creative_click
 from core.capture import consent
@@ -44,21 +46,49 @@ def _goto(page, url, meta, timeout=60000):
                    "carrying on with what has loaded")
 
 
+def _pause(page, seconds):
+    """Wait while the page keeps reporting what it requests — never time.sleep
+    on a path where a beacon may arrive (see consent.pause)."""
+    consent.pause(page, seconds)
+
+
+def _deadline(recorder, settings):
+    """When the strategy has to hand the page back, as a time.time() value.
+
+    The backend kills a target's browser 420s after it starts, and a killed
+    run loses its verdict and possibly its HAR. `run_budget` sits under that
+    with room left for the DOM scan, the screenshot and writing the HAR, and
+    every optional step after the wait — the vision search, a second click,
+    going back after a stray navigation — is measured against it.
+    """
+    t0 = getattr(recorder, "t0", None)
+    return None if t0 is None else t0 + settings.get("run_budget", 380)
+
+
+def _left(deadline):
+    return float("inf") if deadline is None else deadline - time.time()
+
+
 def _scroll(page, settings):
-    """Lazy-loaded slots need the viewport to move past them."""
+    """Lazy-loaded slots need the viewport to move past them.
+
+    Always ends back at the top. It used to return from the middle of the
+    loop when a scroll call failed, leaving the run parked wherever that was.
+    """
     for i in range(settings.get("scroll_passes", 6)):
         try:
             page.evaluate("(y) => window.scrollBy(0, y)", settings.get("scroll_step", 500))
         except Exception:
-            return
-        time.sleep(0.8)
+            break
+        _pause(page, 0.8)
     try:
         page.evaluate("() => window.scrollTo(0, 0)")
     except Exception:
         pass
 
 
-def _wait_for_impression(recorder, settings, meta, expected_id=None, wait_for=None):
+def _wait_for_impression(recorder, settings, meta, expected_id=None, wait_for=None,
+                         page=None):
     """Poll for the campaign's impression beacon.
 
     Waiting long enough is the single most consequential setting here. A
@@ -72,6 +102,14 @@ def _wait_for_impression(recorder, settings, meta, expected_id=None, wait_for=No
     dziennik.pl the campaign's creative only arrives on a slot refresh 132s
     after load: a foreign tag at 20s would end the run before ours had a
     chance to appear.
+
+    With a `page` (and `patrol`, on by default) the wait walks the page
+    instead of sitting at the top of it — see _patrol.
+
+    The patience is cut short when waiting all of it would leave the click no
+    time inside the run's budget (see _deadline): a page slow to load on
+    dziennik.pl (260s patience) could otherwise reach the backend's 420s kill
+    mid-click and lose the verdict along with it.
     """
     ids = {str(i) for i in (wait_for or []) if i}
 
@@ -82,11 +120,157 @@ def _wait_for_impression(recorder, settings, meta, expected_id=None, wait_for=No
             return any(recorder.has(kind=vendors.IMPRESSION, ident=i) for i in ids)
         return recorder.has(kind=vendors.IMPRESSION)
 
-    ok = recorder.wait_for(seen, settings["patience"], settings.get("poll_interval", 0.5))
+    patience = settings["patience"]
+    room = _left(_deadline(recorder, settings)) - AFTER_WAIT_S
+    if room < patience:
+        patience = max(int(room), min(patience, MIN_WAIT_S))
+        _log(meta, f"the page took long to come up — waiting {patience}s, not "
+                   f"{settings['patience']}s, to leave the click time within the run's budget")
+        settings = dict(settings, patience=patience)
+    if page is not None and settings.get("patrol", True):
+        ok = _patrol(page, recorder, settings, meta, seen)
+    else:
+        ok = recorder.wait_for(seen, patience, settings.get("poll_interval", 0.5))
     what = ("this campaign's impression" if (expected_id or ids) else "an impression")
-    _log(meta, f"{what} {'seen' if ok else 'NOT seen'} within {settings['patience']}s"
+    _log(meta, f"{what} {'seen' if ok else 'NOT seen'} within {patience}s"
                + (f" (waited for {len(ids)} sheet ids)" if ids and not expected_id else ""))
     return ok
+
+
+# What the steps after the wait need inside the run's budget: a frame click
+# and its confirmation (~30s), or the vision search screen by screen.
+AFTER_WAIT_S = 60
+# Never cut the wait itself below this.
+MIN_WAIT_S = 10
+
+
+# What the patrol needs to know, in one call: how far the page scrolls, how
+# tall a screen is, and where the ad frames are (page y and height of every
+# visible iframe over 50x50). Measured on the frame, not on the slot around
+# it: dziennik.pl's bill_top div measures 1176x0 while the creative's
+# google_ads_iframe inside it is 1140x600.
+_PAGE_SHAPE = """() => {
+    const se = document.scrollingElement || document.documentElement;
+    const ads = [];
+    for (const f of document.querySelectorAll('iframe')) {
+        const r = f.getBoundingClientRect();
+        if (r.width <= 50 || r.height <= 50) continue;
+        const st = getComputedStyle(f);
+        // A fixed frame is on screen wherever the page is; nothing to walk to.
+        if (st.display === 'none' || st.visibility === 'hidden' || st.position === 'fixed') continue;
+        ads.push([Math.round(r.top + scrollY), Math.round(r.height)]);
+    }
+    return {height: se.scrollHeight, view: innerHeight, ads: ads.slice(0, 40)};
+}"""
+
+# Scroll, and say where the page actually went: a page an interstitial has
+# locked (overflow:hidden on the body) stays put.
+_SCROLL_TO = """(y) => {
+    window.scrollTo({top: y, left: 0, behavior: 'instant'});
+    return Math.round(window.scrollY);
+}"""
+
+
+def _patrol_stops(height, view, ads, screens):
+    """Where the patrol holds the page, top first. -> sorted scroll offsets.
+
+    Screens of 0.85 of the viewport — the step the vision search uses too —
+    down to the bottom (H-V is always a stop, or a slot in the last screen is
+    never shown), but no deeper than `screens` of them: a listing that loads
+    more as it is scrolled has no bottom. An ad frame no screen shows whole
+    gets a stop of its own, centred on it.
+    """
+    view = max(int(view or 0), 200)
+    step = max(int(view * 0.85), 200)
+    bottom = max(int(height or 0) - view, 0)
+    reach = min(bottom, step * max(int(screens) - 1, 0))
+    stops = list(range(0, reach + 1, step))
+    if stops[-1] < reach:
+        stops.append(reach)
+    for top, h in ads:
+        if top + h <= 0 or top >= reach + view:
+            continue                           # beyond where the patrol goes
+        if any(s <= top and top + h <= s + view for s in stops):
+            continue                           # some screen already shows it whole
+        stops.append(int(min(max(top + h / 2 - view / 2, 0), reach)))
+    out = []
+    for y in sorted(stops):
+        if not out or y - out[-1] > 40:
+            out.append(y)
+    return out
+
+
+def _patrol(page, recorder, settings, meta, seen):
+    """Wait for the impression while walking the page, not parked at its top.
+
+    Measured on dziennik.pl: GPT renders a slot below the fold only once it is
+    near the viewport, and the creative's impression is a call made on render.
+    Ad Manager had already returned the campaign's 1140x600 for bill_top at
+    y=1234; the run then waited 260s at the top of a 900px window and reported
+    the tag as not firing. Scrolled to, it fired within a second.
+
+    So the wait goes down the page a screen at a time, holding each screen
+    `patrol_dwell` seconds and stopping on any ad frame no screen shows whole,
+    then starts again from the top with the page measured afresh — it grows
+    as slots fill — until the campaign's impression fires or the patience runs
+    out. It stays where the impression fired, so the click finds the creative
+    on screen; otherwise it goes back to the top.
+    """
+    patience = settings["patience"]
+    poll = settings.get("poll_interval", 0.5)
+    dwell = max(settings.get("patrol_dwell", 2), 0.5)
+    screens = settings.get("patrol_screens", 12)
+    started = time.time()
+    deadline = started + patience
+    if seen():
+        return True
+    passes = held = stuck = 0
+    where, fired_at = 0, None
+    while fired_at is None and time.time() < deadline:
+        try:
+            shape = page.evaluate(_PAGE_SHAPE)
+        except Exception:
+            shape = None                       # mid-navigation; look again shortly
+        if not shape:
+            if recorder.wait_for(seen, min(dwell, max(0.0, deadline - time.time())), poll):
+                fired_at = where
+            continue
+        passes += 1
+        for y in _patrol_stops(shape.get("height"), shape.get("view"),
+                               shape.get("ads") or [], screens):
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            try:
+                at = page.evaluate(_SCROLL_TO, y)
+            except Exception:
+                at = None
+            where = y if at is None else at
+            if y and at is not None and abs(at - y) > 50:
+                stuck += 1
+            held += 1
+            if recorder.wait_for(seen, min(dwell, left), poll):
+                fired_at = where
+                break
+    if fired_at is None and seen():            # arrived during the last scroll
+        fired_at = where
+
+    took = time.time() - started
+    meta["patrol"] = {"passes": passes, "stops": held, "fired_at_y": fired_at,
+                      "stuck": stuck, "s": round(took, 1)}
+    note = (f"; the page would not scroll at {stuck} of them (something holding it)"
+            if stuck else "")
+    if fired_at is not None:
+        _log(meta, f"patrol: fired with the page at y={fired_at} — pass {passes}, "
+                   f"{held} stops, {took:.0f}s into the wait{note}")
+        return True
+    try:
+        page.evaluate("() => window.scrollTo(0, 0)")
+    except Exception:
+        pass
+    _log(meta, f"patrol: {passes} passes over the page, {held} stops of {dwell:g}s, "
+               f"nothing fired — back at the top{note}")
+    return False
 
 
 # ── click verification ────────────────────────────────────────────────────
@@ -103,7 +287,11 @@ def _creative_frame(recorder, page, expected_id=None):
     Even so this is best-effort: the pixel's own frame is often a 0x0 tracker,
     and the slot can be refreshed with a different advertiser between the
     impression and the click. Where that matters, use the watch strategy.
+
+    With an `expected_id` the click-through links below are held to it: one
+    carrying another id is never taken (see _href_is_ours).
     """
+    ids = [str(expected_id)] if expected_id else None
     target_frame = recorder.impression_frame(expected_id)
     if target_frame is None:
         # No impression means no evidence of which frame is ours. Falling back
@@ -111,20 +299,13 @@ def _creative_frame(recorder, page, expected_id=None):
         # not one: measured on wiadomosci.wp.pl it picked a competitor's
         # creative and followed it to admaster.cc. On a page full of ad frames
         # that guess is wrong more often than right, so make none — the
-        # identity-based paths below still apply.
-        return _clickthrough_element(page)
+        # identity-based paths below still apply, and only to links that say
+        # they are ours.
+        return _clickthrough_element(page, ids=ids)
 
-    for fr in [target_frame]:
-        cur = fr
-        while cur is not None:
-            try:
-                el = cur.frame_element()
-                box = el.bounding_box()
-            except Exception:
-                box = None
-            if box and box["width"] >= 50 and box["height"] >= 50:
-                return el, box
-            cur = getattr(cur, "parent_frame", None)
+    el, box = _frame_box(target_frame)
+    if box:
+        return el, box
 
     # No iframe to click. That is not a failure — plenty of creatives render
     # as an element in the main document (static banners, screening
@@ -134,7 +315,26 @@ def _creative_frame(recorder, page, expected_id=None):
     # Fall back to the click-through link. Matching on the click tracker in
     # the href identifies the creative outright, so unlike a size or position
     # guess it cannot land on a competitor's ad sitting in the same page.
-    return _clickthrough_element(page)
+    # The creative is known to be here, so a link with no readable id is
+    # still a candidate (clickonometrics' previews: the CM360 pixel fires from
+    # the page itself and the link only reaches CM360 by redirect).
+    return _clickthrough_element(page, ids=ids, strict=False)
+
+
+def _frame_box(frame):
+    """A frame walked up to the first element of it big enough to be a
+    creative. -> (element, box), or (None, None)."""
+    cur = frame
+    while cur is not None:
+        try:
+            el = cur.frame_element()
+            box = el.bounding_box()
+        except Exception:
+            box = None
+        if box and box["width"] >= 50 and box["height"] >= 50:
+            return el, box
+        cur = getattr(cur, "parent_frame", None)
+    return None, None
 
 
 CLICK_HREF_HINTS = ("track.adform.net/C/", "adclick.g.doubleclick.net",
@@ -144,40 +344,98 @@ CLICK_HREF_HINTS = ("track.adform.net/C/", "adclick.g.doubleclick.net",
                     # in the main document, with no iframe at all.
                     "clickonometrics.pl/campaign=")
 
+# Click redirectors whose link carries no id a vendor rule can read — the
+# tracker's id only appears after the server's redirect. clickonometrics'
+# preview links go .../campaign=52980/click/508323/previewclick.html and 302
+# to CM360's trackclk; 24 confirmed BNP clicks came through that link.
+CLICK_REDIRECTORS = (re.compile(r"clickonometrics\.pl/campaign=[^/]+/click/"),)
 
-def _clickthrough_element(page):
-    """An <a> whose href is the campaign's click tracker, in any frame."""
+
+def _decoded(href):
+    """A link with its percent-encoding peeled off, however many layers deep.
+    Ad Manager hands the tracker over inside `adurl=`, encoded once or twice."""
+    text = href or ""
+    for _ in range(3):
+        nxt = unquote(text)
+        if nxt == text:
+            break
+        text = nxt
+    return text
+
+
+def _href_is_ours(href, ids, strict=True):
+    """May a click-through link be clicked as one of `ids`' creative?
+
+    Yes when it carries one of them. No when it carries an id that is not one
+    of them — that is another placement's or advertiser's link, whatever the
+    host. A link with no readable id is taken only from a known redirector:
+    `adclick.g.doubleclick.net` alone is on every Ad Manager ad on a page, and
+    picking one of those when none of ours had fired is how the dziennik.pl
+    runs clicked their way into the site's own WIADOMOŚCI section.
+
+    `strict=False` is for when the creative is known to be on the page — its
+    impression fired from the page itself, so there is no frame to aim at —
+    and a link with no readable id is taken as it always was. One carrying
+    somebody else's id still is not.
+    """
+    text = _decoded(href)
+    carried = {str(ident) for vendor, _kind, ident in vendors.classify(text)
+               if ident and vendor in vendors.SERVING_VENDORS}
+    if carried:
+        return bool(carried & {str(i) for i in ids})
+    # Ids in shapes no vendor rule reads (CM360's /ddm/clk/<ad>;<placement>;…).
+    # Bounded by non-alphanumerics, so a digit run inside a token is not one.
+    for ident in ids:
+        if re.search(r"(?<![0-9A-Za-z])%s(?![0-9A-Za-z])" % re.escape(str(ident)), text):
+            return True
+    return not strict or any(rx.search(text) for rx in CLICK_REDIRECTORS)
+
+
+# Every link matching a hint, with the largest visible piece of it — the
+# anchor is not always the thing with a size: a link wrapping a block-level
+# <img> can measure 160x17 while the 160x600 banner inside it is what a person
+# clicks. Largest first.
+_CLICKTHROUGH_CANDIDATES = """(hints) => {
+    const out = [];
+    for (const a of document.querySelectorAll('a[href]')) {
+        if (!hints.some(h => a.href.includes(h))) continue;
+        let best = null, bestArea = 0;
+        const parts = [a].concat(Array.from(
+            a.querySelectorAll('img, picture, canvas, video, svg')));
+        for (const e of parts) {
+            const r = e.getBoundingClientRect();
+            const area = r.width * r.height;
+            if (r.width >= 30 && r.height >= 20 && area > bestArea) {
+                best = e; bestArea = area;
+            }
+        }
+        if (best) out.push({el: best, href: a.href, area: bestArea});
+    }
+    out.sort((p, q) => q.area - p.area);
+    return out;
+}"""
+
+
+def _clickthrough_element(page, ids=None, strict=True):
+    """An <a> whose href is the campaign's click tracker, in any frame.
+
+    `ids`, when given, are the only ids whose link may be taken (see
+    _href_is_ours, which `strict` is passed on to). Without them — no sheet —
+    any link to a click tracker does, as it always did.
+    """
     for fr in consent.live_frames(page):
         try:
-            handle = fr.evaluate_handle(
-                """(hints) => {
-                    const as = Array.from(document.querySelectorAll('a[href]'))
-                        .filter(a => hints.some(h => a.href.includes(h)));
-                    // The anchor is not always the thing with a size: a link
-                    // wrapping a block-level <img> can measure 160x17 while the
-                    // 160x600 banner inside it is what a person clicks. Take
-                    // the largest visible piece of the link.
-                    let best = null, bestArea = 0;
-                    for (const a of as) {
-                        const parts = [a].concat(Array.from(
-                            a.querySelectorAll('img, picture, canvas, video, svg')));
-                        for (const e of parts) {
-                            const r = e.getBoundingClientRect();
-                            const area = r.width * r.height;
-                            if (r.width >= 30 && r.height >= 20 && area > bestArea) {
-                                best = e; bestArea = area;
-                            }
-                        }
-                    }
-                    return best;
-                }""",
-                list(CLICK_HREF_HINTS))
-            el = handle.as_element()
-            if not el:
-                continue
-            box = el.bounding_box()
-            if box and box["width"] >= 30 and box["height"] >= 20:
-                return el, box
+            cands = fr.evaluate_handle(_CLICKTHROUGH_CANDIDATES, list(CLICK_HREF_HINTS))
+            hrefs = cands.evaluate("cs => cs.map(c => c.href)") or []
+            for i, href in enumerate(hrefs):
+                if ids is not None and not _href_is_ours(href, ids, strict):
+                    continue
+                el = cands.evaluate_handle("(cs, i) => cs[i].el", i).as_element()
+                if not el:
+                    continue
+                box = el.bounding_box()
+                if box and box["width"] >= 30 and box["height"] >= 20:
+                    return el, box
         except Exception:
             continue
     return None, None
@@ -226,7 +484,7 @@ def _await_overlay(page, timeout, poll=0.15):
             found = None            # mid-navigation; try again
         if found:
             return found
-        time.sleep(poll)
+        _pause(page, poll)
     return None
 
 
@@ -250,8 +508,241 @@ def _wait_overlay_link(page, timeout, poll=0.2):
             pt = None
         if pt:
             return tuple(pt)
-        time.sleep(poll)
+        _pause(page, poll)
     return None
+
+
+# A layer over the whole page that is not the creative under test. On
+# dziennik.pl desktop the pop-up slot shows another advertiser's interstitial
+# — position fixed, 100vw x 100vh, z-index 2147483647 — from about 16s to
+# 34s, and closes itself. Looked for in the stack under the centre of the
+# screen, where anything covering the page sits; a layer that lets clicks
+# through (pointer-events:none) is not in that stack and is no obstacle.
+_COVER_PROBE = """() => {
+    const vw = innerWidth, vh = innerHeight;
+    for (const el of document.elementsFromPoint(vw / 2, vh / 2)) {
+        const st = getComputedStyle(el);
+        if (st.position !== 'fixed' || st.visibility === 'hidden') continue;
+        if (!(parseInt(st.zIndex, 10) >= 100000)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width >= vw * 0.9 && r.height >= vh * 0.9) return el;
+    }
+    return null;
+}"""
+
+# How long a creative click waits for somebody else's interstitial to close.
+# The one on dziennik.pl closes itself after 15s.
+FOREIGN_LAYER_WAIT_S = 20
+
+# The least a click needs of the run's budget: the click itself, a tab
+# opening, and the confirmation wait (8s) after it.
+CLICK_NEEDS_S = 20
+
+
+def _top_element(el):
+    """The element of the main document holding `el`: itself, or the iframe
+    its frame sits in, walked up to the top."""
+    try:
+        fr = el.owner_frame()
+        while fr is not None and fr.parent_frame is not None:
+            el = fr.frame_element()
+            fr = fr.parent_frame
+        return el
+    except Exception:
+        return None
+
+
+def _foreign_layer(page, mine=None):
+    """A full-screen layer over the page that does not hold `mine` (the
+    creative's element, when one is known). -> a short description, or None."""
+    try:
+        layer = page.evaluate_handle(_COVER_PROBE).as_element()
+        if layer is None:
+            return None
+        top = _top_element(mine) if mine is not None else None
+        if top is not None and layer.evaluate(
+                "(l, e) => l === e || l.contains(e) || e.contains(l)", top):
+            return None              # it is the creative under test, or holds it
+        return layer.evaluate(
+            """l => { const r = l.getBoundingClientRect();
+                      return '<' + l.tagName.toLowerCase() + (l.id ? '#' + l.id.slice(0, 40) : '')
+                             + '> ' + Math.round(r.width) + 'x' + Math.round(r.height)
+                             + ' z=' + getComputedStyle(l).zIndex; }""")
+    except Exception:
+        return None
+
+
+def _wait_out_layer(page, settings, meta, mine=None, deadline=None):
+    """Before a creative click, give somebody else's full-screen layer time to
+    close. -> True when nothing covers the page (any more).
+
+    A click made through it lands on the layer — another advertiser's
+    interstitial — and is reported as that advertiser's, or is refused. This
+    matters more now that the run sees its impression the moment it fires: on
+    dziennik.pl the click moved from 275s, long after the interstitial had
+    gone, into the 15 seconds it is up. A layer that holds `mine` is the
+    creative under test (an interstitial the sheet books), not an obstacle.
+    """
+    what = _foreign_layer(page, mine)
+    if not what:
+        return True
+    spent = meta.get("foreign_layer_wait_s", 0)
+    limit = min(FOREIGN_LAYER_WAIT_S - spent, _left(deadline) - 60)
+    if limit < 1:
+        _log(meta, f"a full-screen layer that is not ours covers the page ({what}); "
+                   "no time left to wait for it")
+        return False
+    _log(meta, f"a full-screen layer that is not ours covers the page ({what}) — "
+               f"waiting up to {limit:.0f}s for it to close")
+    t = time.time()
+    gone = False
+    while time.time() - t < limit:
+        _pause(page, 0.5)
+        if not _foreign_layer(page, mine):
+            gone = True
+            break
+    took = time.time() - t
+    meta["foreign_layer_wait_s"] = round(spent + took, 1)
+    _log(meta, f"    it closed after {took:.0f}s" if gone
+               else f"    still up after {took:.0f}s — going ahead")
+    return gone
+
+
+def _same_page(a, b):
+    def bare(u):
+        return (u or "").split("#", 1)[0].rstrip("/")
+    return bare(a) == bare(b)
+
+
+class _TabWatch:
+    """Did a click send the test tab itself to another page?
+
+    Only a new tab was ever watched for, so a click that navigated the tab it
+    was made in went unnoticed: on dziennik.pl the run then searched for the
+    creative, scanned the DOM and took its screenshot on the site's
+    WIADOMOŚCI section. A changed URL is not the test — players and
+    infinite articles rewrite theirs with pushState while staying put — so
+    the document is marked before the click, and only a main-frame
+    navigation that leaves a document without the mark counts.
+
+    The event handlers make no Playwright calls: the sync API would be
+    re-entered from inside its own dispatch.
+    """
+
+    def __init__(self, page):
+        self.page = page
+        self.navigated = []
+        self.requested = False
+        self.token = uuid.uuid4().hex
+        try:
+            self.before = page.url
+        except Exception:
+            self.before = ""
+        try:
+            page.evaluate("(t) => { window.__atvDoc = t; }", self.token)
+            self.marked = True
+        except Exception:
+            self.marked = False
+        try:
+            page.on("framenavigated", self._on_navigated)
+            page.on("request", self._on_request)
+            self.listening = True
+        except Exception:
+            self.listening = False
+
+    def _on_navigated(self, frame):
+        try:
+            if frame.parent_frame is None:
+                self.navigated.append(frame.url)
+        except Exception:
+            pass
+
+    def _on_request(self, req):
+        try:
+            if req.is_navigation_request() and req.frame.parent_frame is None:
+                self.requested = True
+        except Exception:
+            pass
+
+    def left(self, settle=5):
+        """-> the URL the tab was taken to, or None if it is still on the
+        document it was on before the click."""
+        if self.requested and not self.navigated:
+            # Asked for and not committed yet: give it a moment to land.
+            t = time.time()
+            while not self.navigated and time.time() - t < settle:
+                _pause(self.page, 0.25)
+        if not self.navigated:
+            return None
+        mark = None
+        for _ in range(8):
+            try:
+                mark = self.page.evaluate("() => window.__atvDoc || null")
+                break
+            except Exception:
+                _pause(self.page, 0.5)          # mid-navigation; ask again
+        if self.marked and mark == self.token:
+            return None                         # same document: pushState, #hash
+        try:
+            now = self.page.url
+        except Exception:
+            return None
+        if _same_page(now, self.before):
+            return None                         # reloaded in place, not gone anywhere
+        return now
+
+    def stop(self):
+        if not self.listening:
+            return
+        for event, fn in (("framenavigated", self._on_navigated),
+                          ("request", self._on_request)):
+            try:
+                self.page.remove_listener(event, fn)
+            except Exception:
+                pass
+
+
+def _back_to_test_page(page, recorder, settings, meta, watch):
+    """Undo a click that navigated the test tab itself: go back, once.
+
+    Everything after the click — the vision search, the DOM scan, the final
+    screenshot — is about the test page, so it has to be the test page. A
+    click-through that opens in the same tab is still a click-through: the
+    beacon has already judged it, and its landing is kept. Only the time the
+    run has left is spent on going back, never a fresh page load: the backend
+    kills a target at 420s and the result goes with it.
+    """
+    try:
+        to = watch.left()
+    finally:
+        watch.stop()
+    if not to:
+        return
+    ours = meta.get("click_result") == "confirmed"
+    if ours and not meta.get("landing"):
+        meta["landing"] = to
+    left = _left(_deadline(recorder, settings)) - 10
+    back = False
+    if left >= 5:
+        try:
+            page.go_back(wait_until="domcontentloaded", timeout=int(min(15, left) * 1000))
+        except Exception:
+            pass
+        try:
+            back = _same_page(page.url, watch.before)
+        except Exception:
+            back = False
+    t0 = getattr(recorder, "t0", None)
+    meta["navigated_away"] = {"t": round(time.time() - t0, 1) if t0 else None,
+                              "url": to[:300], "returned": back}
+    what = ("the click-through opened in the test tab itself" if ours
+            else "the click took the test tab itself away")
+    if back:
+        _log(meta, f"{what} ({to[:120]}) — went back to the test page")
+        _pause(page, 2)
+    else:
+        _log(meta, f"{what} ({to[:120]}) — could not go back"
+                   + (" in the time left" if left < 5 else f"; now on {page.url[:100]}"))
 
 
 def _click_overlay(page, ctx, recorder, settings, meta, expected_id):
@@ -290,11 +781,12 @@ def _click_overlay(page, ctx, recorder, settings, meta, expected_id):
     since = len(recorder.beacons)
     _log(meta, f"overlay click at ({cx:.0f},{cy:.0f}) on <{info['tag'].lower()}> "
                f"{info['w']}x{info['h']}")
+    watch = _TabWatch(page)
     try:
         with ctx.expect_page(timeout=8000) as popup:
             page.mouse.click(cx, cy)
         newp = popup.value
-        time.sleep(2)
+        _pause(newp, 2)
         try:
             meta["landing"] = newp.url
             _log(meta, f"landing -> {newp.url[:150]}")
@@ -302,77 +794,116 @@ def _click_overlay(page, ctx, recorder, settings, meta, expected_id):
         except Exception:
             pass
     except Exception:
-        time.sleep(2)
+        _pause(page, 2)
 
     _confirm_click(recorder, meta, expected_id, since, source="overlay")
+    _back_to_test_page(page, recorder, settings, meta, watch)
     return meta.get("click_result") == "confirmed"
+
+
+# Where on an element it is itself the topmost thing, nearest its centre.
+# Sampled inside the element's own frame, so the answer is relative to the
+# element: [dx, dy] from its top-left corner, plus its size, in its frame's
+# CSS pixels.
+_HITTABLE = """e => {
+    const r = e.getBoundingClientRect();
+    const x0 = Math.max(r.left, 0), x1 = Math.min(r.right, innerWidth - 1);
+    const y0 = Math.max(r.top, 0), y1 = Math.min(r.bottom, innerHeight - 1);
+    if (x1 - x0 < 4 || y1 - y0 < 4) return null;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    let best = null, bestD = Infinity;
+    for (let i = 0; i <= 24; i++) for (let j = 0; j <= 16; j++) {
+        const x = x0 + (x1 - x0) * i / 24, y = y0 + (y1 - y0) * j / 16;
+        const t = document.elementFromPoint(x, y);
+        if (t && (e.contains(t) || t.contains(e)) && t !== document.body
+            && t !== document.documentElement) {
+            const d = (x - cx) ** 2 + (y - cy) ** 2;
+            if (d < bestD) { bestD = d; best = [x - r.left, y - r.top, r.width, r.height]; }
+        }
+    }
+    return best;
+}"""
+
+
+def _hittable_spot(el):
+    """-> (page_x, page_y, dx, dy) for the point where `el` is on top, or None.
+
+    page_x/page_y are in the page's viewport coordinates; dx/dy are the same
+    point relative to the element, which is what an element click takes. The
+    search runs in the element's own frame, and its answer used to be fed to
+    page.mouse.click as if it were a page coordinate: the centre of a 300x250
+    ad frame became (150,124) on the page — dziennik.pl's WIADOMOŚCI menu
+    item, which the run clicked and followed. bounding_box() is in main-frame
+    coordinates, frames and scaling included, so it puts the point back.
+    """
+    try:
+        hit = el.evaluate(_HITTABLE)
+        box = el.bounding_box() if hit else None
+    except Exception:
+        return None
+    if not hit or not box:
+        return None
+    dx, dy, w, h = hit
+    sx = box["width"] / w if w else 1.0
+    sy = box["height"] / h if h else 1.0
+    return box["x"] + dx * sx, box["y"] + dy * sy, dx, dy
 
 
 def _hittable_point(el):
     """A point on screen where `el` itself is the topmost thing, nearest its centre.
 
-    -> (x, y) in viewport coordinates, or None when no sampled point is its own.
-    A click-through anchor stretched over a whole wallpaper has its geometric
-    centre under the article column; clicking there lands on the article.
+    -> (x, y) in the page's viewport coordinates, or None when no sampled
+    point is its own. A click-through anchor stretched over a whole wallpaper
+    has its geometric centre under the article column; clicking there lands
+    on the article.
+    """
+    spot = _hittable_spot(el)
+    return (spot[0], spot[1]) if spot else None
+
+
+def _in_main_frame(page, el):
+    try:
+        return el.owner_frame() is page.main_frame
+    except Exception:
+        return False
+
+
+def _press(page, el, spot, in_main):
+    """Make the click. -> None once it is made, else why it could not be.
+
+    Never a page.mouse.click in place of an element click that failed. The
+    element click is refused when something else sits over the element, and
+    clicking the same spot by coordinates anyway lands on that something —
+    on dziennik.pl another advertiser's interstitial, which the run then
+    reported as the slot carrying another advertiser.
     """
     try:
-        pt = el.evaluate(
-            """e => {
-                 const r = e.getBoundingClientRect();
-                 const x0 = Math.max(r.left, 0), x1 = Math.min(r.right, innerWidth - 1);
-                 const y0 = Math.max(r.top, 0), y1 = Math.min(r.bottom, innerHeight - 1);
-                 if (x1 - x0 < 4 || y1 - y0 < 4) return null;
-                 const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-                 let best = null, bestD = Infinity;
-                 for (let i = 0; i <= 24; i++) for (let j = 0; j <= 16; j++) {
-                   const x = x0 + (x1 - x0) * i / 24, y = y0 + (y1 - y0) * j / 16;
-                   const t = document.elementFromPoint(x, y);
-                   if (t && (e.contains(t) || t.contains(e)) && t !== document.body
-                       && t !== document.documentElement) {
-                     const d = (x - cx) ** 2 + (y - cy) ** 2;
-                     if (d < bestD) { bestD = d; best = [x, y]; }
-                   }
-                 }
-                 return best;
-               }""")
-    except Exception:
+        if spot and in_main:
+            # The wallpaper case: the point was checked to be the element's
+            # own in the page itself, so a plain mouse click is exact.
+            page.mouse.click(spot[0], spot[1])
+        elif spot:
+            el.click(position={"x": spot[2], "y": spot[3]}, timeout=5000)
+        else:
+            el.click(timeout=5000)
         return None
-    return tuple(pt) if pt else None
+    except Exception as e:
+        lines = [ln.strip() for ln in str(e).splitlines() if ln.strip()]
+        why = next((ln for ln in lines if "intercepts pointer events" in ln),
+                   lines[0] if lines else type(e).__name__)
+        return why[:140]
 
 
-def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
-    """Click the creative and follow where it goes.
-
-    Uses a real mouse click on purpose. WP's Commercial Break gates on
-    isTrusted, so a synthetic element.click() is accepted by the DOM and then
-    ignored by the ad — producing a click that appears to happen and tracks
-    nothing.
-    """
-    if not settings.get("click", True):
-        _log(meta, "click skipped (profile)")
-        return
-
-    since = len(recorder.beacons)
-    el, box = _creative_frame(recorder, page,
-                              None if isinstance(expected_id, (tuple, list, set)) else expected_id)
-
-    if not box:
-        # Deterministic targeting found nothing — the creative is neither an
-        # iframe nor a link carrying the click tracker. That is the screening
-        # and wallpaper case, where the run used to stop here and the
-        # placement looked click-less although nothing had been attempted.
-        # Ask the model where it is, and let the beacon check below decide
-        # whether the click it produced belongs to this campaign.
-        found = _ask_where(page, settings, meta, expected_id)
-        if found:
-            _clicked_at(page, ctx, recorder, settings, meta, expected_id,
-                        found["x"] + found["w"] / 2, found["y"] + found["h"] / 2,
-                        since, source="model")
-            return
-        _log(meta, "click skipped: no clickable creative frame found")
-        return
-
+def _click_element(page, ctx, recorder, settings, meta, el, box, expected_id, since,
+                   source="frame"):
+    """Click one element, follow the tab it opens, judge the click by its
+    beacon. -> "clicked", "refused" (nothing was clicked), "off-screen" or
+    "no-time"."""
     vp = settings["viewport"]
+    deadline = _deadline(recorder, settings)
+    if _left(deadline) < CLICK_NEEDS_S:
+        _log(meta, "click skipped: the run is out of time for this page")
+        return "no-time"
 
     def centre():
         b = None
@@ -385,7 +916,7 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
 
     try:
         el.scroll_into_view_if_needed(timeout=5000)
-        time.sleep(1)
+        _pause(page, 1)
     except Exception:
         pass
     _box, cx, cy = centre()
@@ -399,7 +930,7 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
         # explicitly and measure again.
         try:
             el.evaluate("e => e.scrollIntoView({block: 'center', inline: 'nearest'})")
-            time.sleep(1)
+            _pause(page, 1)
         except Exception:
             pass
         _box, cx, cy = centre()
@@ -408,7 +939,7 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
         # Genuinely unreachable. Clicking a clamped fallback coordinate is how
         # the wrong ad gets clicked and reported as this campaign's, so refuse.
         _log(meta, f"click skipped: creative off-screen at ({cx:.0f},{cy:.0f})")
-        return
+        return "off-screen"
 
     # Click the element, not the coordinate. Computing a centre point and
     # firing page.mouse.click() there hits whatever is topmost at that spot —
@@ -418,25 +949,30 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
     # which publishers' overlays ignore because isTrusted is false).
     # A wallpaper's click-through anchor is as large as the page, so its centre
     # sits under the article column. Click where the element itself is on top.
-    spot = _hittable_point(el)
+    spot = _hittable_spot(el)
+    if spot and not (0 <= spot[0] < vp["width"] and 0 <= spot[1] < vp["height"]):
+        spot = None
     if spot and (abs(spot[0] - cx) > 1 or abs(spot[1] - cy) > 1):
-        cx, cy = spot
+        cx, cy = spot[0], spot[1]
     else:
         spot = None
-    _log(meta, f"element click at ({cx:.0f},{cy:.0f})")
+    in_main = _in_main_frame(page, el)
+
+    watch = _TabWatch(page)
+    refused = None
     try:
         with ctx.expect_page(timeout=8000) as popup:
-            if spot:
-                page.mouse.click(cx, cy)
-            else:
-                try:
-                    el.click(timeout=5000)
-                except Exception:
-                    page.mouse.click(cx, cy)      # last resort
+            refused = _press(page, el, spot, in_main)
+            if refused:
+                raise RuntimeError(refused)
+            _log(meta, f"element click at ({cx:.0f},{cy:.0f})")
         newp = popup.value
-        deadline = time.time() + 12
+        # Polled on the new tab itself, so its redirects are seen as they
+        # happen; read in a time.sleep loop, newp.url never moved past the
+        # first address.
+        until = time.time() + max(2, min(12, _left(deadline) - 25))
         last = ""
-        while time.time() < deadline:
+        while time.time() < until:
             try:
                 cur = newp.url
             except Exception:
@@ -444,36 +980,181 @@ def _click_creative(page, ctx, recorder, settings, meta, expected_id=None):
             if cur != last:
                 last = cur
                 _log(meta, f"landing -> {cur[:160]}")
-            time.sleep(0.5)
+            if newp.is_closed():
+                break
+            _pause(newp, 0.5)
         meta["landing"] = last
         try:
             newp.close()
         except Exception:
             pass
     except Exception:
-        time.sleep(2)
-        _log(meta, "no new tab opened by the click")
+        if not refused:
+            _pause(page, 2)
+            _log(meta, "no new tab opened by the click")
 
-    _confirm_click(recorder, meta, expected_id, since, source="frame")
-    if meta.get("click_result") != "none":
+    if refused:
+        watch.stop()
+        _log(meta, f"click skipped: the creative would not take the click — {refused}")
+        return "refused"
+    _confirm_click(recorder, meta, expected_id, since, source=source)
+    _back_to_test_page(page, recorder, settings, meta, watch)
+    return "clicked"
+
+
+def _sheet_vendors(ids):
+    """The serving vendor a sheet's ids belong to, told by their shape: an
+    Adform banner id (bn) runs to 8 digits — 90565344 — and a CM360
+    placement id to 9 — 457786509. Before any of them fires, nothing else on
+    the page says which it is."""
+    out = set()
+    for i in ids:
+        s = str(i)
+        if s.isdigit():
+            out.add("CM360" if len(s) >= 9 else "Adform")
+    return out
+
+
+def _click_unbooked(page, ctx, recorder, settings, meta, sheet, deadline, most=2,
+                    wait_out_layers=True):
+    """Click the frames of impressions that fired from the sheet's own vendor
+    under ids the sheet does not book. -> how many were clicked.
+
+    The last resort when no booked impression fired and the model found
+    nothing. Measured on money.pl's WP previews: the creatives fire Adform
+    90626723-26, ids missing from the loaded sheet, and the model would not
+    point at a 300x250 that was plainly on screen — so the click went untested
+    although the frame that fired the impression is an exact handle on the
+    creative. Each click is judged against that frame's own id, so the log
+    says whose click it was; it is never credited to a booked id.
+
+    An id whose click has already tracked — the model's click landed on that
+    creative and was judged against the sheet — is not clicked again: the
+    beacon has answered for it, and a second click would only overwrite that
+    answer.
+    """
+    kin = _sheet_vendors(sheet)
+    booked = {str(i) for i in sheet}
+    answered = {str(b.get("id")) for b in recorder.beacons
+                if b.get("kind") == vendors.CLICK and b.get("evidence") == "fired"}
+    tried, looked = 0, set()
+    for b in list(recorder.beacons):
+        if tried >= most:
+            break
+        ident = str(b.get("id") or "")
+        if (b.get("kind") != vendors.IMPRESSION or b.get("evidence") != "fired"
+                or b.get("vendor") not in kin or not ident
+                or ident in booked or ident in looked or ident in answered):
+            continue
+        looked.add(ident)
+        if _left(deadline) < 40:
+            _log(meta, "no time left to try the frames of unbooked impressions")
+            break
+        el, box = _frame_box(recorder.impression_frame(ident))
+        if not box:
+            continue
+        tried += 1
+        _log(meta, f"trying the frame of {b['vendor']} {ident}, which fired here "
+                   "but is not in the sheet")
+        if wait_out_layers:
+            _wait_out_layer(page, settings, meta, el, deadline)
+        done = _click_element(page, ctx, recorder, settings, meta, el, box, ident,
+                              len(recorder.beacons), source="unbooked")
+        if done == "clicked" and meta.get("click_result") == "confirmed":
+            meta["click_target_id"] = ident
+            _log(meta, f"note: that click belongs to {ident}, which the sheet does "
+                       "not book — not to any of the campaign's booked ids")
+            break
+        if _page_lost(meta):
+            break
+    return tried
+
+
+def _page_lost(meta):
+    """Did a click take the test tab away for good? Then nothing more is
+    clicked: whatever is on screen is some other site, not the test page."""
+    gone = meta.get("navigated_away")
+    return bool(gone) and not gone.get("returned")
+
+
+def _click_creative(page, ctx, recorder, settings, meta, expected_id=None,
+                    wait_out_layers=True):
+    """Click the creative and follow where it goes.
+
+    Uses a real mouse click on purpose. WP's Commercial Break gates on
+    isTrusted, so a synthetic element.click() is accepted by the DOM and then
+    ignored by the ad — producing a click that appears to happen and tracks
+    nothing.
+
+    `expected_id` is the id the click has to carry — or, when none of the
+    sheet's impressions fired, the sheet's ids as a tuple. Then no frame is
+    known to be ours: the only links taken are ones that carry one of those
+    ids, and nothing is clicked merely for being an ad.
+
+    `wait_out_layers` is off where the full-screen layer is itself what is
+    being tested (navigation_click's Commercial Break).
+    """
+    if not settings.get("click", True):
+        _log(meta, "click skipped (profile)")
         return
 
-    # The element was clicked and nothing tracked. Deterministic targeting
-    # found *a* clickable thing, not necessarily the creative (OLX Polubienia:
-    # the model sees the banner the page's own link logic does not). Give the
-    # model one look before reporting the click as absent.
-    found = _ask_where(page, settings, meta, expected_id)
+    deadline = _deadline(recorder, settings)
+    if _left(deadline) < CLICK_NEEDS_S:
+        _log(meta, "click skipped: the run is out of time for this page")
+        return
+    sheet = (tuple(str(i) for i in expected_id)
+             if isinstance(expected_id, (tuple, list, set)) else None)
+    if sheet:
+        el, box = _clickthrough_element(page, ids=sheet)
+    else:
+        el, box = _creative_frame(recorder, page, expected_id)
+    if wait_out_layers:
+        # Also before the vision search when nothing was found: a screenshot
+        # of somebody else's interstitial shows the model nothing of ours.
+        _wait_out_layer(page, settings, meta, el, deadline)
+
+    if box:
+        done = _click_element(page, ctx, recorder, settings, meta, el, box,
+                              expected_id, len(recorder.beacons))
+        if done in ("off-screen", "no-time") or _page_lost(meta):
+            return
+        if done == "clicked" and meta.get("click_result") != "none":
+            return
+        # Clicked and nothing tracked, or the element would not take the
+        # click. Deterministic targeting found *a* clickable thing, not
+        # necessarily the creative (OLX Polubienia: the model sees the banner
+        # the page's own link logic does not). Give the model one look before
+        # reporting the click as absent.
+
+    # Without a box, deterministic targeting found nothing — the creative is
+    # neither an iframe nor a link carrying the click tracker. That is the
+    # screening and wallpaper case, where the run used to stop here and the
+    # placement looked click-less although nothing had been attempted. Ask the
+    # model where it is, and let the beacon check decide whether the click it
+    # produced belongs to this campaign.
+    found = _ask_where(page, settings, meta, expected_id, deadline=deadline)
     if found:
         _clicked_at(page, ctx, recorder, settings, meta, expected_id,
                     found["x"] + found["w"] / 2, found["y"] + found["h"] / 2,
-                    len(recorder.beacons), source="model")
+                    len(recorder.beacons), source="model",
+                    wait_out_layers=wait_out_layers)
+        if meta.get("click_result") == "confirmed" or _page_lost(meta):
+            return
+    tried = (_click_unbooked(page, ctx, recorder, settings, meta, sheet, deadline,
+                             wait_out_layers=wait_out_layers)
+             if sheet else 0)
+    if not box and not found and not tried:
+        _log(meta, "click skipped: no clickable creative frame found")
 
 
 # How many screens of a page the vision fallback is willing to look through.
 MAX_SCREENS = 5
+# What one of those looks can take: the scroll, the screenshot, and a model
+# call that gives up after 25s.
+VISION_LOOK_S = 28
 
 
-def _ask_where(page, settings, meta, expected_id, _again=True):
+def _ask_where(page, settings, meta, expected_id, _again=True, deadline=None):
     """Let a model point at the creative. -> box in viewport coordinates."""
     eye = settings.get("vision")
     advertiser = settings.get("advertiser")
@@ -490,28 +1171,39 @@ def _ask_where(page, settings, meta, expected_id, _again=True):
     # reported "not tested" because the model was never shown them. Look screen
     # by screen, and leave the page scrolled where the creative was found:
     # the click that follows is in viewport coordinates.
+    #
+    # Always from the top. Starting wherever the page happened to be — after a
+    # click, or a wait that ended deep in the page — hid everything above it,
+    # and the first screen is where screenings and billboards are.
     vp = settings["viewport"]
     step = max(int(vp["height"] * 0.85), 200)
     try:
         total = page.evaluate("document.documentElement.scrollHeight") or 0
-        start = page.evaluate("window.scrollY") or 0
+        was = page.evaluate("window.scrollY") or 0
     except Exception:
-        total, start = 0, 0
-    offsets = [start]
-    y = start
+        total, was = 0, 0
+    offsets = [0]
+    y = 0
     while len(offsets) < MAX_SCREENS and y + step < total - vp["height"] * 0.25:
         y += step
         offsets.append(y)
 
     last_why = {}
+    looked = 0
     for n, off in enumerate(offsets):
+        # One look is a screenshot and a model call of up to 25s, and a click
+        # has to fit after it.
+        if _left(deadline) < VISION_LOOK_S + CLICK_NEEDS_S:
+            _log(meta, "vision search cut short: the run is out of time for this page")
+            break
         try:
-            if n:
+            if n or was:
                 page.evaluate("(y) => window.scrollTo(0, y)", off)
-                time.sleep(0.8)
+                _pause(page, 0.8)
             shot = page.screenshot(type="png")
         except Exception:
             return None
+        looked += 1
         why = {}
         box = creative_click.locate(eye, shot, advertiser, vp, why)
         if why:
@@ -523,32 +1215,42 @@ def _ask_where(page, settings, meta, expected_id, _again=True):
                        + (f" — {box['reason'][:70]}" if box.get("reason") else ""))
             return box
     try:
-        page.evaluate("(y) => window.scrollTo(0, y)", start)
+        page.evaluate("(y) => window.scrollTo(0, y)", 0)
     except Exception:
         pass
     _log(meta, "model could not locate the creative"
-               + (f" (looked through {len(offsets)} screens)" if len(offsets) > 1 else "")
+               + (f" (looked through {looked} screens)" if looked > 1 else "")
                + (f" — model call failed: {last_why['error']}" if last_why.get("error")
                   else f" — last answer: {last_why['reply']}" if last_why.get("reply") else ""))
-    if _again:
+    if _again and _left(deadline) >= 2 * VISION_LOOK_S + CLICK_NEEDS_S:
         # The model's answer on the same page differs from one look to the
         # next (wp.pl mobile: found on one run, "nothing" on the next). One
         # more pass costs a few seconds; a missed click costs a wrong report.
         _log(meta, "looking once more")
-        time.sleep(3)
-        return _ask_where(page, settings, meta, expected_id, _again=False)
+        _pause(page, 3)
+        return _ask_where(page, settings, meta, expected_id, _again=False, deadline=deadline)
     return None
 
 
 def _clicked_at(page, ctx, recorder, settings, meta, expected_id, cx, cy,
-                since, source):
+                since, source, wait_out_layers=True):
     """A real mouse click at a point, then judge it by the beacon."""
+    deadline = _deadline(recorder, settings)
+    if _left(deadline) < CLICK_NEEDS_S:
+        _log(meta, "click skipped: the run is out of time for this page")
+        return
+    if source == "model" and wait_out_layers:
+        # The model looked at a screenshot taken a moment ago; a layer that has
+        # come up since would take this click.
+        _wait_out_layer(page, settings, meta, None, deadline)
+        since = max(since, len(recorder.beacons))
+    watch = _TabWatch(page)
     _log(meta, f"{source} click at ({cx:.0f},{cy:.0f})")
     try:
         with ctx.expect_page(timeout=8000) as popup:
             page.mouse.click(cx, cy)
         newp = popup.value
-        time.sleep(2)
+        _pause(newp, 2)
         try:
             meta["landing"] = newp.url
             _log(meta, f"landing -> {newp.url[:160]}")
@@ -556,10 +1258,11 @@ def _clicked_at(page, ctx, recorder, settings, meta, expected_id, cx, cy,
         except Exception:
             pass
     except Exception:
-        time.sleep(2)
+        _pause(page, 2)
         _log(meta, "no new tab opened by the click")
 
     _confirm_click(recorder, meta, expected_id, since, source=source)
+    _back_to_test_page(page, recorder, settings, meta, watch)
 
 
 def _confirm_click(recorder, meta, expected_id, since, source):
@@ -573,11 +1276,13 @@ def _confirm_click(recorder, meta, expected_id, since, source):
     # Give the beacon time to arrive. A click tracker fires from the tab the
     # click opened, and checking once a couple of seconds later reported "no
     # click beacon followed" for clicks the HAR shows landing correctly —
-    # a contradiction between the live log and the verdict.
+    # a contradiction between the live log and the verdict. The wait has to
+    # let Playwright deliver events (recorder.sleep), or nothing that arrives
+    # during it is seen until it is over.
     deadline = time.time() + 8
     verdict, ident = creative_click.click_confirmed(recorder, expected_id, since)
     while verdict != "confirmed" and time.time() < deadline:
-        time.sleep(0.4)
+        recorder.sleep(0.4)
         verdict, ident = creative_click.click_confirmed(recorder, expected_id, since)
     meta["click_result"] = verdict
     if verdict == "confirmed":
@@ -658,7 +1363,7 @@ def load(page, ctx, recorder, settings, meta, target):
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
-                         target.get("wait_for"))
+                         target.get("wait_for"), page=page)
     aim, go = _click_target_id(recorder, meta, target, settings)
     if go:
         _click_creative(page, ctx, recorder, settings, meta, aim)
@@ -696,13 +1401,13 @@ def gam_preview(page, ctx, recorder, settings, meta, target):
     if served:
         _log(meta, "campaign creative already served on the first load — not reloading")
     else:
-        time.sleep(2)
+        _pause(page, 2)
         _goto(page, url, meta)
         _log(meta, "second load (renders creative)")
         consent.accept(page, 1.5)
     _scroll(page, settings)
     _wait_for_impression(recorder, settings, meta, target.get("expected_id"),
-                         target.get("wait_for"))
+                         target.get("wait_for"), page=page)
     aim, go = _click_target_id(recorder, meta, target, settings)
     if go:
         _click_creative(page, ctx, recorder, settings, meta, aim)
@@ -730,7 +1435,7 @@ def _click_link(page, loc, meta):
 
     try:
         loc.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
-        time.sleep(0.5)
+        _pause(page, 0.5)
     except Exception:
         pass
     try:
@@ -760,7 +1465,7 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
     url = target["url"]
     _goto(page, url, meta)
     meta["consent"] = consent.accept(page, settings.get("settle_after_consent", 3))
-    time.sleep(3)
+    _pause(page, 3)
 
     exclude = settings.get("exclude_links")
     exclude_rx = re.compile(exclude, re.I) if exclude else None
@@ -813,11 +1518,18 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
     budget = settings["patience"]
     per_click = max(12, budget // max(1, settings.get("max_link_clicks", 8)))
 
+    deadline = _deadline(recorder, settings)
     for i, href in enumerate(links[:settings.get("max_link_clicks", 8)], 1):
         if not consent.alive(page):
             _log(meta, "page closed — stopping")
             break
         if _campaign_fired(recorder, expected, ids):
+            break
+        # One more navigation is a link click, up to 22s watching for the
+        # overlay, the wait for its impression and a way back: ~70s. Eight of
+        # them do not fit in the run's budget on a slow portal.
+        if _left(deadline) < 70:
+            _log(meta, f"stopping after {i - 1} navigations: the run is out of time for this page")
             break
         _log(meta, f"[{i}] navigating via link click -> {href[:90]}")
         try:
@@ -848,7 +1560,7 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
                 page.mouse.click(px, py)
             except Exception as e:
                 _log(meta, f"    overlay click failed: {str(e)[:60]}")
-            time.sleep(2)
+            _pause(page, 2)
             _confirm_click(recorder, meta,
                            _aim_id(recorder, expected, ids) or (tuple(sorted(ids)) or None),
                            since, source="overlay")
@@ -876,11 +1588,14 @@ def navigation_click(page, ctx, recorder, settings, meta, target):
             # normal path only if that produced no click for this campaign.
             aim = _aim_id(recorder, expected, ids)
             if not _click_overlay(page, ctx, recorder, settings, meta, aim):
-                _click_creative(page, ctx, recorder, settings, meta, aim)
+                # The full-screen layer here is the creative under test, not
+                # something in the way: never wait for it to go.
+                _click_creative(page, ctx, recorder, settings, meta, aim,
+                                wait_out_layers=False)
             return
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(2)
+            _pause(page, 2)
             consent.accept(page, 1.5)
         except Exception:
             break
@@ -1076,7 +1791,7 @@ def _await_video(page, recorder, expected_id, budget, ids=()):
         if time.time() >= deadline:
             return None
         _keep_active(page)
-        time.sleep(1.0)
+        _pause(page, 1.0)
 
 
 # How long a pod gets to reach the campaign's own spot after somebody else's
@@ -1092,7 +1807,7 @@ def _await_own_spot(page, recorder, expected_id, ids, budget):
         if mine & _serving_impressions(recorder):
             return True
         _keep_active(page)
-        time.sleep(1.0)
+        _pause(page, 1.0)
     return False
 
 

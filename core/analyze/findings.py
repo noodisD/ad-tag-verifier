@@ -29,15 +29,37 @@ INCONCLUSIVE = "inconclusive"
 UNATTRIBUTED = "unattributed"
 
 
-def beacons_from_har(har_path):
+def read_har(har_path):
+    """-> the parsed HAR, or None when it is missing or unreadable.
+
+    A discover run reads one HAR five ways (beacons, defects, deliveries, the
+    bot check, the previewed creative's tags); on a 60 MB portal capture
+    parsing it once instead of five times is the difference that matters.
+    """
+    try:
+        with open(har_path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _load(har_path, har):
+    if har is not None:
+        return har
+    return read_har(har_path) if har_path else None
+
+
+def beacons_from_har(har_path=None, har=None):
     """Re-derive beacons straight from the HAR.
 
     Independent of whatever the recorder believed at capture time, so a
     corrected vendor pattern applies retroactively to every artifact already
-    on disk.
+    on disk. Raises on an unreadable file — callers fall back to what the
+    recorder saw.
     """
-    with open(har_path, encoding="utf-8") as f:
-        har = json.load(f)
+    if har is None:
+        with open(har_path, encoding="utf-8") as f:
+            har = json.load(f)
 
     entries = har.get("log", {}).get("entries", [])
     t0 = None
@@ -74,33 +96,133 @@ def load_artifact(run_dir):
 
 # Hosts worth looking for. A response body is only searched when one of them
 # appears in it, so a 3 MB script bundle costs a substring test, not a regex.
-_TAG_HOSTS = ("adsafeprotected", "doubleclick.net/ddm", "adform.net",
+# "doubleclick.net", not "doubleclick.net/ddm": inside an escaped JS string the
+# path arrives as `doubleclick.net\/ddm` or `doubleclick.net%2Fddm`.
+_TAG_HOSTS = ("adsafeprotected", "doubleclick.net", "adform.net",
               "doubleverify", "abtshield")
 
 # <script src=""https://…""> — the attribute value wrapped in a second pair of
 # quotes. HTML reads `src=""` as an empty value and the address that follows as
 # a stray attribute name, so the element has no source and nothing is requested.
 _DOUBLED = re.compile(
-    r"<\s*(script|img|iframe)\b[^<>]*?\bsrc\s*=\s*\"\"\s*(https?://[^\"'\s<>]+?)\"\"",
+    r"<\s*(script|img|iframe)\b[^<>]*?\bsrc\s*=\s*\"\"\s*(https?://[^\"'<>\s]+?)\"\"",
     re.IGNORECASE)
+
+_BS = re.escape(chr(92))
+# Escapes come stacked: the dziennik.pl Ad Manager body carries the creative's
+# vu() call as `bn\\x3d90565355` — a JS string inside a JSON string — and one
+# pass of \xNN left `bn\=90565355`, which no vendor rule reads as an id.
+_HEX = re.compile(_BS + r"+x([0-9a-fA-F]{2})")
+_UNI = re.compile(_BS + r"+u([0-9a-fA-F]{4})")
+_SLASH = re.compile(_BS + r"+/")
+
+
+def _uni(m):
+    n = int(m.group(1), 16)
+    # A lone surrogate is not a character; leave the escape as it was.
+    return m.group(0) if 0xD800 <= n <= 0xDFFF else chr(n)
 
 
 def _readable(text):
     """Undo the layers a creative can arrive in: percent-encoding (DV360's
-    preview page hands the markup over as an encoded JS string) and \\xNN
-    escapes."""
-    bs = chr(92)
+    preview page hands the markup over as an encoded JS string), \\xNN and
+    \\uNNNN escapes and escaped slashes, however many backslashes deep."""
     # Any %XX, not just an encoded "<": the markup may arrive with its angle
     # brackets already turned into \x3c first, leaving no %3C to key on.
     if re.search(r"%[0-9A-Fa-f]{2}", text):
         text = unquote(text)
-    if bs + "x" in text:
-        text = re.sub(re.escape(bs) + r"x([0-9a-fA-F]{2})",
-                      lambda m: chr(int(m.group(1), 16)), text)
-    return text.replace(bs + "/", "/")
+    if chr(92) not in text:
+        return text
+    text = _HEX.sub(lambda m: chr(int(m.group(1), 16)), text)
+    text = _UNI.sub(_uni, text)
+    return _SLASH.sub("/", text)
 
 
-def markup_defects(har_path):
+def _body(entry):
+    """-> the response text of one HAR entry worth searching, or ""."""
+    content = entry.get("response", {}).get("content", {}) or {}
+    mime = (content.get("mimeType") or "").lower()
+    if mime.startswith(("image/", "video/", "audio/", "font/")):
+        return ""
+    text = content.get("text") or ""
+    if text and content.get("encoding") == "base64":
+        try:
+            text = base64.b64decode(text).decode("utf-8", "replace")
+        except Exception:
+            return ""
+    return text
+
+
+def _mime(entry):
+    return ((entry.get("response", {}).get("content", {}) or {}).get("mimeType") or "").lower()
+
+
+# Any address in readable markup, protocol-relative ones included (WP's ad JSON
+# writes its pixels as "//track.adform.net/…").
+_ANY_URL = re.compile(r"(?:https?:)?//[^\s\"'<>\\]+", re.IGNORECASE)
+
+# Elements whose content is rendered as text. A tracker address standing as
+# text right after one of these opens, or after an element closes, is a text
+# node: the page shows it (or nothing, in a 1x1 frame) and never requests it.
+# Kept to HTML on purpose — VAST's <Impression>https://…</Impression> has the
+# same shape and is exactly how a video tracker is meant to be written; so is
+# a tag shown for reading in a <pre> or <textarea>.
+_TEXT_PARENTS = {"html", "body", "div", "span", "p", "center", "td", "th", "li",
+                 "font", "b", "i", "u", "em", "strong", "section", "article",
+                 "header", "footer", "main", "ins", "a", "label", "small"}
+_VOID = {"img", "br", "hr", "meta", "link", "input", "wbr", "source", "embed",
+         "param", "base", "area", "col", "track"}
+_CLOSABLE = _TEXT_PARENTS | {"script", "noscript", "style", "iframe", "table",
+                             "tr", "tbody", "thead", "ul", "ol", "object", "video",
+                             "audio", "svg", "canvas", "form", "button", "head",
+                             "h1", "h2", "h3", "h4", "h5", "h6", "nav", "aside",
+                             "figure", "picture"}
+_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)\b([^<>]*)>")
+
+
+def _as_text(text, start, end):
+    """Does the address at text[start:end] stand in the markup as plain text —
+    outside every attribute, script string and call — rather than somewhere a
+    browser would request it from?
+
+    The shape, from DV360 previews of the welovemedia creatives: the Adform
+    impression URL pasted after the creative's closing tag,
+    `…</script> https://track.adform.net/adfserve/?bn=90484739;…</body>`. HTML
+    renders that as text; nothing ever asks for it.
+    """
+    j = start - 1
+    while j >= 0:
+        if text[j].isspace():
+            j -= 1
+        elif j >= 1 and text[j - 1] == chr(92) and text[j] in "nrt":
+            j -= 2                       # an escaped newline inside a JS string
+        else:
+            break
+    if j < 0 or text[j] != ">":
+        return False                     # a quote, '=', '(' …: requested from code
+    lt = text.rfind("<", 0, j)
+    m = _TAG.fullmatch(text, lt, j + 1) if lt >= 0 else None
+    if not m:
+        return False
+    closing, name, attrs = m.group(1), m.group(2).lower(), m.group(3)
+    if attrs.count('"') % 2 or attrs.count("'") % 2:
+        return False                     # the '>' sits inside an attribute value
+    if closing:
+        if name not in _CLOSABLE:
+            return False
+    elif name not in _TEXT_PARENTS and name not in _VOID:
+        return False                     # inside <script>, <textarea>, <pre>, VAST …
+    k = end
+    while k < len(text) and text[k].isspace():
+        k += 1
+    # Followed by the next tag, or by the end of the string the markup is in.
+    return k >= len(text) or text[k] in "<'\""
+
+
+PLAIN_TEXT = "tracker URL pasted as plain text — no browser will request it"
+
+
+def markup_defects(har_path=None, har=None):
     """Vendor tags present in delivered markup that the browser cannot load.
 
     The commonest cause, seen twice in two days on different publishers: a tag
@@ -111,46 +233,185 @@ def markup_defects(har_path):
     — indistinguishable, from the traffic alone, from one nobody implemented.
     The HAR holds the response bodies, so the cause can be read off directly.
 
+    The second: an impression or measurement tracker's address pasted into the
+    creative as bare text, with no <img> or <script> around it (tag "text").
+    Eleven DV360 previews of the welovemedia creatives carried their Adform
+    impression that way — a trafficking error that, from the traffic alone,
+    reads exactly like a tag nobody implemented.
+
     -> [{"vendor", "kind", "id", "tag", "problem", "url"}], deduplicated.
     Whether the tag *also* fired is the caller's to check against the beacons.
     """
-    try:
-        with open(har_path, encoding="utf-8") as f:
-            har = json.load(f)
-    except Exception:
+    har = _load(har_path, har)
+    if har is None:
         return []
 
     out, seen = [], set()
+
+    def add(vendor, kind, ident, tag, url, problem):
+        key = (vendor, ident, tag)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"vendor": vendor, "kind": kind, "id": ident, "tag": tag,
+                    "url": url[:200], "problem": problem})
+
     for e in har.get("log", {}).get("entries", []):
-        content = e.get("response", {}).get("content", {}) or {}
-        mime = (content.get("mimeType") or "").lower()
-        if mime.startswith(("image/", "video/", "audio/", "font/")):
-            continue
-        text = content.get("text") or ""
+        text = _body(e)
         if not text:
             continue
-        if content.get("encoding") == "base64":
-            try:
-                text = base64.b64decode(text).decode("utf-8", "replace")
-            except Exception:
-                continue
         low = text.lower()
         if not any(h in low for h in _TAG_HOSTS):
             continue
-        for m in _DOUBLED.finditer(_readable(text)):
+        readable = _readable(text)
+        for m in _DOUBLED.finditer(readable):
             tag, url = m.group(1).lower(), m.group(2)
             for vendor, kind, ident in vendors.classify(url):
-                key = (vendor, ident, tag)
-                if key in seen:
+                add(vendor, kind, ident, tag, url,
+                    "the tag is delivered with its attribute wrapped in doubled "
+                    "quotes, so its address is empty and the browser never requests it")
+        # VAST writes every tracker as element text: its format, not a defect.
+        if "xml" in _mime(e):
+            continue
+        for m in _ANY_URL.finditer(readable):
+            url = m.group(0)
+            full = "https:" + url if url.startswith("//") else url
+            # A click address is not meant to be requested until someone clicks.
+            hits = [h for h in vendors.classify(full)
+                    if h[1] in (vendors.IMPRESSION, vendors.MEASUREMENT)]
+            if hits and _as_text(readable, m.start(), m.end()):
+                for vendor, kind, ident in hits:
+                    add(vendor, kind, ident, "text", full, PLAIN_TEXT)
+    return out
+
+
+# ── delivered, never shown ───────────────────────────────────────────────
+
+# Responses that carry a creative but do not place it: a header-bidding bid
+# that may have lost the auction, a tag-manager container, a video player's
+# playlist. A tracker in one of these says nothing about what reached a slot.
+_NOT_A_DELIVERY = ("bidder", "/openrtb", "prebid", "rubiconproject.com",
+                   "adx.adform.net", "connectad.io", "nexx360.io",
+                   "googletagmanager.com", "onnetwork.tv")
+
+_SERVING_URL = re.compile(
+    r"(?:https?:)?//(?:track\.adform\.net|ad\.doubleclick\.net)/[^\s\"'<>\\]*",
+    re.IGNORECASE)
+
+# One Ad Manager "ldjh" response can fill several slots; each starts on its
+# own line with {"/<network>/<path>/<slot>":[…
+_GAM_SLOT_HEAD = re.compile(r'(?:^|\n)\{"(/[^"\n]+)":\[')
+
+# The fallback a tag carries for browsers without JavaScript. Its <img> is
+# never requested where scripts run — DV360 previews (20260907) pair Adform's
+# adfscript tag with a <noscript> adfserve pixel that no run could fire.
+_NOSCRIPT = re.compile(r"<noscript\b.*?</noscript\s*>", re.IGNORECASE | re.DOTALL)
+
+
+def gam_slot(req_url, text=None, pos=None):
+    """The ad unit's last path segment (bill_top, rectangle_1, pop-up) for a
+    position in an Ad Manager response, or None.
+
+    The header line just before the position names the slot. A single-slot
+    request names it in `iu_parts` too, which is the fallback: `enc_prev_ius`
+    (/0/1/2/3) indexes the slot's path into `iu_parts`, one path per slot. A
+    request for several slots with no header to tell them apart names none.
+    """
+    if text is not None and pos is not None:
+        head = None
+        for head in _GAM_SLOT_HEAD.finditer(text, 0, pos):
+            pass
+        if head:
+            return head.group(1).rstrip("/").rsplit("/", 1)[-1] or None
+    m = re.search(r"[?&]iu_parts=([^&]*)", req_url or "")
+    if m:
+        parts = unquote(m.group(1)).split(",")
+        e = re.search(r"[?&]enc_prev_ius=([^&]*)", req_url)
+        if not e:
+            return parts[-1] or None
+        paths = unquote(e.group(1)).split(",")
+        last = paths[0].rstrip("/").rsplit("/", 1)[-1]
+        if len(paths) != 1 or not last.isdigit() or int(last) >= len(parts):
+            return None
+        return parts[int(last)] or None
+    m = re.search(r"[?&]iu=([^&]*)", req_url or "")
+    if m:
+        return unquote(m.group(1)).rstrip("/").rsplit("/", 1)[-1] or None
+    return None
+
+
+def _host(url):
+    m = re.match(r"^[a-z][a-z0-9+.-]*://([^/?#]*)", url or "", re.IGNORECASE)
+    return m.group(1).lower() if m else ""
+
+
+def delivered(har_path=None, har=None, ids=None):
+    """Serving impressions an ad response delivered whose request never went out.
+
+    On dziennik.pl the ad server answered the bill_top request with this
+    campaign's creative — its Adform impression wrapped in `vu("…")` — but the
+    slot sits below the fold and Ad Manager renders it only once it is near
+    the viewport. The run waited at the top of the page, the creative never
+    rendered, and the report said none of the campaign's tags fired. The
+    delivery itself is in the HAR, so the report can say what happened instead.
+
+    Counted only where the browser would request the address once the creative
+    renders: inside a script string or call (`vu("…")`, Studio's
+    IMPRESSION_IMG, WP's "pixels":[…]) or an attribute (`src=`). That leaves out
+    VAST <Impression> text (a video spot that never played — a different
+    cause), an address pasted as plain text, which no render would ever
+    request (markup_defects names that one), and a <noscript> fallback.
+
+    `ids` limits the search to these ids (the sheet's). ->
+    [{"vendor", "id", "slot", "source"}], one per (vendor, id), in HAR order.
+    `slot` is the Ad Manager ad unit's last segment, None for other ad servers;
+    `source` is the host that answered with the creative.
+    """
+    har = _load(har_path, har)
+    if har is None:
+        return []
+    ids = {str(i) for i in ids} if ids is not None else None
+    entries = har.get("log", {}).get("entries", [])
+
+    requested = set()
+    for e in entries:
+        for vendor, kind, ident in vendors.classify(e.get("request", {}).get("url", "")):
+            if kind == vendors.IMPRESSION and ident:
+                requested.add((vendor, ident))
+
+    out, seen = [], set()
+    for e in entries:
+        req_url = e.get("request", {}).get("url", "") or ""
+        # Host and path only: an Ad Manager request carries the auction's
+        # targeting (hb_bidder=…) in its query.
+        where = req_url.split("?", 1)[0].lower()
+        if any(s in where for s in _NOT_A_DELIVERY) or "xml" in _mime(e):
+            continue
+        text = _body(e)
+        if not text or ("track.adform.net" not in text and "ad.doubleclick.net" not in text):
+            continue
+        readable = _readable(text)
+        gam = "/gampad/ads" in req_url
+        fallback = [n.span() for n in _NOSCRIPT.finditer(readable)]
+        for m in _SERVING_URL.finditer(readable):
+            if any(a <= m.start() < b for a, b in fallback):
+                continue
+            url = m.group(0)
+            full = "https:" + url if url.startswith("//") else url
+            for vendor, kind, ident in vendors.classify(full):
+                if (kind != vendors.IMPRESSION or vendor not in vendors.SERVING_VENDORS
+                        or not ident or (ids is not None and ident not in ids)):
+                    continue
+                key = (vendor, ident)
+                if key in seen or key in requested:
+                    continue
+                # A script string, a call's argument or an attribute value.
+                if not m.start() or readable[m.start() - 1] not in "\"'`=":
                     continue
                 seen.add(key)
-                out.append({
-                    "vendor": vendor, "kind": kind, "id": ident, "tag": tag,
-                    "url": url[:200],
-                    "problem": "the tag is delivered with its attribute wrapped "
-                               "in doubled quotes, so its address is empty and "
-                               "the browser never requests it",
-                })
+                out.append({"vendor": vendor, "id": ident,
+                            "slot": gam_slot(req_url, readable, m.start()) if gam else None,
+                            "source": _host(req_url)})
     return out
 
 
@@ -253,38 +514,47 @@ def diagnose(meta, har_path=None, har=None):
 
 _URL_IN_BODY = re.compile(r"""https?://[^\s"'<>\\]+""", re.IGNORECASE)
 
+# Ad Manager previews name the creative as creativeId=138620228396; DV360's as
+# creativeId=xbid.752653503, and DV360 then fetches that creative from
+# …adspreview.googleusercontent.com/preview/…/752653503/previewuser.
+_CREATIVE_ID = re.compile(r"[?&]creativeId=(?:xbid\.)?(\d+)")
+_PREVIEW_CONTENT = ("adspreview.googleusercontent.com/preview/",
+                    "displayads-formats.googleusercontent.com/ads/preview/")
 
-def creative_tags(har_path, creative_id):
+
+def previewed_creative(url):
+    """The creative a preview link shows, or None."""
+    m = _CREATIVE_ID.search(url or "")
+    return m.group(1) if m else None
+
+
+def creative_tags(har_path=None, creative_id=None, har=None):
     """The vendor tags carried by the ad response that delivered one creative.
 
-    An Ad Manager preview link names the creative it shows (`creativeId=`), and
-    the response that served it is in the HAR. Reading the tags out of that
-    response answers "what did the creative actually carry?" — which separates
-    "the creative never came" from "it came with a different placement's tag",
-    two situations that both look like "the booked tag did not fire".
+    An Ad Manager or DV360 preview link names the creative it shows
+    (`creativeId=`), and the response that served it is in the HAR. Reading
+    the tags out of that response answers "what did the creative actually
+    carry?" — which separates "the creative never came" from "it came with a
+    different placement's tag", two situations that both look like "the
+    booked tag did not fire".
 
     -> sorted [(vendor, kind, id)], serving and measurement vendors alike.
     """
     if not creative_id:
         return []
-    try:
-        with open(har_path, encoding="utf-8") as f:
-            har = json.load(f)
-    except Exception:
+    har = _load(har_path, har)
+    if har is None:
         return []
     found = set()
     cid = str(creative_id)
     for e in har.get("log", {}).get("entries", []):
-        if "gampad/ads" not in e.get("request", {}).get("url", ""):
+        url = e.get("request", {}).get("url", "")
+        preview = any(p in url for p in _PREVIEW_CONTENT)
+        if "gampad/ads" not in url and not preview:
             continue
-        content = e.get("response", {}).get("content", {}) or {}
-        text = content.get("text") or ""
-        if content.get("encoding") == "base64" and text:
-            try:
-                text = base64.b64decode(text).decode("utf-8", "replace")
-            except Exception:
-                continue
-        if cid not in text:
+        text = _body(e)
+        # DV360 names the creative in the address it fetches it from, not in it.
+        if not text or (cid not in text and not (preview and cid in url)):
             continue
         for url in _URL_IN_BODY.findall(_readable(text)):
             for vendor, kind, ident in vendors.classify(url):

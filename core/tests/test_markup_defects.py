@@ -187,3 +187,75 @@ def test_a_response_for_another_creative_is_not_read(tmp_path):
 
 def test_no_creative_id_means_nothing_to_read(tmp_path):
     assert findings.creative_tags(_ad_response_har(tmp_path, CARRIED), None) == []
+
+
+# ── an address pasted as plain text ──────────────────────────────────────
+# The welovemedia creatives as DV360 previews them (20261005, t18/t21): the
+# creative's HTML handed to contentDocument.write() as a JS string, percent-
+# and \x-escaped, with the Adform impression pasted after </script> as bare
+# text. Eleven previews; the click worked every time, the impression never.
+
+from urllib.parse import quote
+
+BS = chr(92)
+WELOVEMEDIA = ("<html><body><script>var clickTag = 'https://adclick.g.doubleclick.net/pcs/click"
+               "?xai=A&adurl=https://track.adform.net/C/?bn=90484739;gdpr=${GDPR}';</script> "
+               "https://track.adform.net/adfserve/?bn=90484739;1x1inv=1;srctype=3;gdpr=${GDPR};"
+               "ord=[timestamp]</body></html>")
+
+
+def _dv360(markup):
+    """Escape markup the way the DV360 preview page carries it."""
+    js = (markup.replace("/", BS + "/").replace("<", BS + "x3c").replace(">", BS + "x3e")
+          .replace("=", BS + "x3d"))
+    return ("<script>(function(){var d=frame.contentDocument;d.open();d.write(decodeURIComponent('"
+            + quote(js, safe="") + "'));d.close();})();</script>")
+
+
+def test_a_tracker_pasted_as_plain_text_is_a_defect(tmp_path):
+    out = findings.markup_defects(_har(tmp_path, _dv360(WELOVEMEDIA)))
+    assert [(d["vendor"], d["kind"], d["id"], d["tag"]) for d in out] == [
+        ("Adform", "impression", "90484739", "text")]
+    assert out[0]["problem"] == "tracker URL pasted as plain text — no browser will request it"
+
+
+def test_the_plain_shape_is_found_too(tmp_path):
+    out = findings.markup_defects(_har(tmp_path, WELOVEMEDIA))
+    assert [(d["id"], d["tag"]) for d in out] == [("90484739", "text")]
+
+
+def test_text_inside_an_element_is_plain_text_too(tmp_path):
+    body = '<div class="x">\n  https://pixel.adsafeprotected.com/rfw/st/1/1000001/skeleton.gif\n</div>'
+    out = findings.markup_defects(_har(tmp_path, body))
+    assert [(d["vendor"], d["id"], d["tag"]) for d in out] == [("IAS", "1000001", "text")]
+
+
+def test_requested_shapes_are_not_plain_text(tmp_path):
+    """Strings a script requests and attribute values are what a working tag
+    looks like; none of them may be reported."""
+    for body in (
+        '<script>vu("https://track.adform.net/adfserve/?bn=1;1x1inv=1")</script>',
+        "<script>var u = 'https://track.adform.net/adfserve/?bn=1';</script>",
+        "<script>\n  pixels: [\n    'https://track.adform.net/adfserve/?bn=1'\n  ]</script>",
+        '<img src="https://track.adform.net/adfserve/?bn=1" width="1">',
+        "<img src=https://track.adform.net/adfserve/?bn=1 width=1>",
+        '{"pixels":["//track.adform.net/adfserve/?bn=1;1x1inv=1"]}',
+        '<a href="https://track.adform.net/C/?bn=1">https://track.adform.net/C/?bn=1</a>',
+        "<!-- https://track.adform.net/adfserve/?bn=1 -->",
+    ):
+        assert findings.markup_defects(_har(tmp_path, body)) == [], body
+
+
+def test_tags_shown_for_reading_are_not_plain_text(tmp_path):
+    for body in ("<pre>https://track.adform.net/adfserve/?bn=1</pre>",
+                 "<textarea>https://track.adform.net/adfserve/?bn=1</textarea>",
+                 "<script>https://track.adform.net/adfserve/?bn=1</script>"):
+        assert findings.markup_defects(_har(tmp_path, body)) == [], body
+
+
+def test_vast_writes_its_trackers_as_text_and_that_is_fine(tmp_path):
+    vast = ("<VAST><Ad><InLine><Impression>https://ad.doubleclick.net/ddm/trackimp/N1.2X/"
+            "B3.455988298;ord=1</Impression></InLine></Ad></VAST>")
+    assert findings.markup_defects(_har(tmp_path, vast, mime="text/xml")) == []
+    # the same shape served as HTML/JSON: <Impression> is not an HTML element
+    assert findings.markup_defects(_har(tmp_path, vast)) == []

@@ -139,3 +139,67 @@ def test_a_click_with_nothing_expected_is_not_confirmed():
     verdict, ident = cc.click_confirmed(rec, None, 0)
     assert verdict == "unattributed"
     assert ident == "455881285"
+
+
+# ── a click on the creative's own id, which the sheet does not book ──────
+# money.pl's WP previews of the Korpo-Q4 creatives (20261009, 93b2/m0-m2):
+# the creative fired Adform 90626723 and the model's click carried 90626723 —
+# not in the loaded sheet, so click_confirmed said "other_advertiser".
+
+KORPO = ("90565344", "90565351", "90571110")
+
+
+def _imp(ident, vendor="Adform"):
+    return {"kind": "impression", "evidence": "fired", "id": ident, "vendor": vendor}
+
+
+def test_an_unbooked_id_with_its_own_impression_and_click_is_the_creatives():
+    fired = [_imp("90626723"), _click("90626723"), _imp("455988298", "CM360")]
+    assert cc.own_unbooked(fired, "90626723", KORPO) == ("Adform", "90626723")
+
+
+def test_click_confirmed_still_calls_it_another_advertisers():
+    """The report reads the pair; the click verdict itself does not change."""
+    rec = Rec([_click("90626723")])
+    assert cc.click_confirmed(rec, KORPO, 0) == ("other_advertiser", "90626723")
+
+
+def test_a_click_with_no_impression_of_its_own_is_somebody_elses():
+    assert cc.own_unbooked([_imp("90565399"), _click("90626723")], "90626723", KORPO) is None
+
+
+def test_an_impression_with_no_click_proves_nothing():
+    assert cc.own_unbooked([_imp("90626723")], "90626723", KORPO) is None
+
+
+def test_a_booked_id_is_not_unbooked():
+    assert cc.own_unbooked([_imp("90565344"), _click("90565344")], "90565344", KORPO) is None
+
+
+def test_not_when_the_campaigns_own_creative_fired_too():
+    """Then there was a booked creative on the page the click could have missed."""
+    fired = [_imp("90565351"), _imp("90626723"), _click("90626723")]
+    assert cc.own_unbooked(fired, "90626723", KORPO) is None
+
+
+def test_another_vendors_pair_is_another_advertisers_creative():
+    """A CM360 pre-roll on an Adform sheet (dziennik.pl, CM360 455988298):
+    impression and click agree, and it is still not this campaign's."""
+    fired = [_imp("455988298", "CM360"), _click("455988298", "CM360")]
+    assert cc.own_unbooked(fired, "455988298", KORPO) is None
+
+
+def test_the_pair_must_be_one_vendors():
+    fired = [_imp("90626723", "CM360"), _click("90626723")]
+    assert cc.own_unbooked(fired, "90626723", KORPO) is None
+
+
+def test_measurement_pixels_are_not_a_pair():
+    fired = [_imp("975868942", "ABT Shield"), _click("975868942", "ABT Shield")]
+    assert cc.own_unbooked(fired, "975868942", KORPO) is None
+
+
+def test_markup_only_beacons_are_not_a_pair():
+    fired = [{**_imp("90626723"), "evidence": "in_markup"}, _click("90626723")]
+    assert cc.own_unbooked(fired, "90626723", KORPO) is None
+    assert cc.own_unbooked([_imp("90626723"), _click("90626723")], None, KORPO) is None

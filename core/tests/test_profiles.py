@@ -208,3 +208,35 @@ class TestAimingTheClick:
     def test_without_a_sheet_nothing_changes(self):
         aim, go, _ = self._aim([])
         assert (aim, go) == (None, True)
+
+
+# ── the wait walks the page, inside the run's budget ─────────────────────
+
+def test_the_wait_walks_the_page_by_default():
+    """dziennik.pl renders a below-the-fold slot only near the viewport; a run
+    parked at the top for 260s reported a served 1140x600 as not firing."""
+    s = profiles.resolve("https://www.dziennik.pl/?version=1140x600-euro")
+    assert s["patrol"] is True
+    assert s["patrol_dwell"] >= 1               # long enough for an in-view rule
+    assert s["patrol_screens"] >= 4
+
+
+def test_every_waiting_profile_leaves_the_click_time_before_the_backend_kills_it():
+    """The backend kills a target 420s in and the verdict goes with it. The
+    strategy hands the page back by run_budget, and the longest wait plus a
+    30s start (load, consent, the lazy-load pass) plus the click has to fit
+    under that. A slower start shortens the wait instead."""
+    import re
+    from pathlib import Path
+    from core.capture import strategies
+
+    app = Path(__file__).resolve().parents[2] / "backend" / "app.py"
+    kill = int(re.search(r"^TARGET_TIMEOUT_S = (\d+)", app.read_text(encoding="utf-8"),
+                         re.M).group(1))
+    cfg = profiles._config()
+    budget = cfg["defaults"]["run_budget"]
+    assert budget + 30 <= kill, "room after the strategy for the DOM scan, screenshot, HAR"
+    for p in cfg["profiles"]:
+        s = dict(cfg["defaults"], **{k: v for k, v in p.items() if k not in ("match", "name")})
+        if s["strategy"] in ("load", "gam_preview"):
+            assert s["patience"] + strategies.AFTER_WAIT_S <= budget - 30, p["name"]

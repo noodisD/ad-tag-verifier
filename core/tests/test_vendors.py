@@ -291,3 +291,59 @@ def test_cm360_click_is_still_a_click():
     assert vendors.classify(
         "https://ad.doubleclick.net/ddm/trackclk/N1731505.148648GAZETA.PL0/B36989652.457781888;dc_trk_aid=1"
     ) == [("CM360", vendors.CLICK, "457781888")]
+
+
+# ── a click Ad Manager wraps with its landing address fully encoded ──────
+# The GAM click link on dziennik.pl's bill_top carries the Adform tracker as
+# adurl=https%3A%2F%2Ftrack.adform.net%2FC%2F%3Fbn%3D… — no vendor's path is in
+# the URL until it is decoded.
+
+GAM_CLICK = "https://adclick.g.doubleclick.net/pcs/click?xai=AKAOjs&sai=AMfl&sig=Cg0A&fbs_aeid=%5Bgw_fbsaeid%5D"
+
+
+def test_a_fully_encoded_adform_click_names_its_campaign():
+    assert vendors.classify(
+        GAM_CLICK + "&adurl=https%3A%2F%2Ftrack.adform.net%2FC%2F%3Fbn%3D90565355%3Bgdpr%3D1"
+    ) == [("Adform", vendors.CLICK, "90565355")]
+
+
+def test_a_fully_encoded_cm360_click_names_its_placement():
+    assert vendors.classify(
+        GAM_CLICK + "&adurl=https%3A%2F%2Fad.doubleclick.net%2Fddm%2Ftrackclk%2FN1234.567890SITE"
+                    "%2FB36639324.455334468%3Bdc_trk_aid%3D649061393"
+    ) == [("CM360", vendors.CLICK, "455334468")]
+
+
+def test_a_doubly_encoded_adurl_is_read_too():
+    assert vendors.classify(
+        "https://googleads.g.doubleclick.net/pcs/click?xai=A"
+        "&adurl=https%253A%252F%252Ftrack.adform.net%252FC%252F%253Fbn%253D90194589"
+    ) == [("Adform", vendors.CLICK, "90194589")]
+
+
+def test_the_search_ads_click_redirector_is_read_too():
+    assert vendors.classify(
+        "https://www.googleadservices.com/pagead/aclk?sa=L&ai=x"
+        "&adurl=https%3A%2F%2Ftrack.adform.net%2FC%2F%3Fbn%3D90194589"
+    ) == [("Adform", vendors.CLICK, "90194589")]
+
+
+def test_a_view_ping_is_not_the_click_it_names():
+    """/pcs/view is Ad Manager's impression ping; reading its adurl as a click
+    would invent a click nobody made."""
+    for host in ("securepubads.g.doubleclick.net", "googleads4.g.doubleclick.net",
+                 "ad.doubleclick.net"):
+        assert vendors.classify(
+            f"https://{host}/pcs/view?xai=A&sig=B"
+            "&adurl=https%3A%2F%2Ftrack.adform.net%2FC%2F%3Fbn%3D90565355") == []
+
+
+def test_a_wrapped_landing_page_is_nobodys_click():
+    assert vendors.classify(GAM_CLICK + "&adurl=https%3A%2F%2Fwww.bankclient.example%2Ffirmy%2F") == []
+
+
+def test_a_sheets_ids_tell_their_serving_vendor_by_shape():
+    assert vendors.serving_vendors_of(["90565344", 90571110]) == {"Adform"}
+    assert vendors.serving_vendors_of(["457786509"]) == {"CM360"}
+    assert vendors.serving_vendors_of(["90565344", "457786509", None, "", "abc"]) == {"Adform", "CM360"}
+    assert vendors.serving_vendors_of(None) == set()
