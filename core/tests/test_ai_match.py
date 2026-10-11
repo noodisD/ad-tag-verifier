@@ -148,3 +148,77 @@ def test_a_model_that_raises_does_not_take_the_run_down():
             raise RuntimeError("network died")
     r = _one("double billboard wide", model=Boom())
     assert r["expected_id"] is None and r["needs_review"] is True
+
+
+# ── rate limits: ten runs at once are when the quota answers 429 ─────────
+
+import io                     # noqa: E402
+import urllib.error           # noqa: E402
+
+OK_REPLY = b'{"candidates": [{"content": {"parts": [{"text": "{\\"found\\": false}"}]}}]}'
+
+
+class _Wire:
+    """urlopen stand-in: plays its answers in order, records each timeout."""
+    def __init__(self, *answers):
+        self.answers, self.timeouts = list(answers), []
+
+    def __call__(self, req, timeout=None):
+        self.timeouts.append(timeout)
+        a = self.answers.pop(0)
+        if isinstance(a, BaseException):
+            raise a
+        return io.BytesIO(a)
+
+
+def _http(code, retry_after=None):
+    hdrs = {"Retry-After": retry_after} if retry_after is not None else {}
+    return urllib.error.HTTPError("https://model.test", code, "nope", hdrs, None)
+
+
+def _matcher(monkeypatch, wire, timeout=25):
+    m = match.GeminiMatcher(api_key="test-key", timeout=timeout)
+    monkeypatch.setattr(m, "_endpoint_and_headers", lambda: ("https://model.test", {}))
+    monkeypatch.setattr(match.urllib.request, "urlopen", wire)
+    monkeypatch.setattr(match.time, "sleep", lambda s: None)
+    return m
+
+
+def test_a_rate_limit_is_retried(monkeypatch):
+    wire = _Wire(_http(429), OK_REPLY)
+    m = _matcher(monkeypatch, wire)
+    assert m.generate([]) == '{"found": false}'
+    assert m.last_error is None, "a retry that got through leaves no error behind"
+    assert len(wire.timeouts) == 2
+
+
+def test_a_rate_limit_that_persists_is_named_not_mistaken_for_no_answer(monkeypatch):
+    wire = _Wire(_http(429), _http(429), _http(429), OK_REPLY)
+    m = _matcher(monkeypatch, wire)
+    assert m.generate([]) is None
+    assert m.last_error == "rate limited (HTTP 429)"
+    assert len(wire.timeouts) == 1 + match.GeminiMatcher.MAX_RETRIES
+
+
+def test_a_request_the_server_rejects_is_not_retried(monkeypatch):
+    wire = _Wire(_http(400), OK_REPLY)
+    m = _matcher(monkeypatch, wire)
+    assert m.generate([]) is None and m.last_error == "model call failed (HTTP 400)"
+    assert len(wire.timeouts) == 1
+
+
+def test_a_timeout_is_not_retried(monkeypatch):
+    """It has already spent the budget the vision step allowed for one call."""
+    wire = _Wire(TimeoutError("timed out"), OK_REPLY)
+    m = _matcher(monkeypatch, wire)
+    assert m.generate([]) is None and m.last_error.startswith("TimeoutError")
+    assert len(wire.timeouts) == 1
+
+
+def test_retries_stay_inside_the_one_call_budget(monkeypatch):
+    """strategies.VISION_LOOK_S assumes a call lasts at most `timeout`."""
+    wire = _Wire(_http(503, retry_after="60"), OK_REPLY)
+    m = _matcher(monkeypatch, wire, timeout=5)
+    assert m.generate([]) is None, "a wait longer than the budget is not taken"
+    assert len(wire.timeouts) == 1
+    assert wire.timeouts[0] <= 5

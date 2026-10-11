@@ -145,7 +145,8 @@ def main(argv=None):
     p.add_argument("--expect", help="expected bn / placement id")
     p.add_argument("--jobs", help="json file with a list of targets")
     p.add_argument("--viewport", default="desktop", choices=["desktop", "mobile"])
-    p.add_argument("--out", default="core/artifacts")
+    p.add_argument("--out", default=None,
+                   help="artifact root (default: TAGVERIFIER_ARTIFACTS, else %%LOCALAPPDATA%%\\ad-tag-verifier\\artifacts)")
     p.add_argument("--campaign", default="run")
     p.add_argument("--headless", action="store_true", default=True)
     p.add_argument("--headed", dest="headless", action="store_false")

@@ -12,6 +12,7 @@ devtools, including the publisher's.
 """
 
 import json
+import os
 import re
 import time
 import uuid
@@ -278,8 +279,24 @@ def _close_context(ctx):
         return f"{type(e).__name__}: {str(e)[:120]}"
 
 
-def new_run_dir(root="core/artifacts", campaign="run"):
+def default_artifact_root():
+    """Where run artifacts go when nobody says otherwise.
+
+    Not inside the repo. The repo lives in a OneDrive-synced folder, and a run
+    of sixteen targets writes 1-2.5 GB of HAR — with ten of them written at
+    once, the sync client spends the run uploading evidence nobody asked it
+    to keep. TAGVERIFIER_ARTIFACTS overrides; without a local app-data folder
+    (not Windows) it stays where it always was.
+    """
+    if os.environ.get("TAGVERIFIER_ARTIFACTS"):
+        return Path(os.environ["TAGVERIFIER_ARTIFACTS"]).expanduser().resolve()
+    if os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "ad-tag-verifier" / "artifacts"
+    return Path(__file__).resolve().parents[2] / "core" / "artifacts"
+
+
+def new_run_dir(root=None, campaign="run"):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    d = Path(root) / f"{stamp}-{campaign}-{uuid.uuid4().hex[:4]}"
+    d = Path(root or default_artifact_root()) / f"{stamp}-{campaign}-{uuid.uuid4().hex[:4]}"
     d.mkdir(parents=True, exist_ok=True)
     return d

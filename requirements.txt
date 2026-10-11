@@ -1,5 +1,6 @@
 playwright>=1.40
 flask>=3.0          # backend/app.py — the UI is unusable without it
+psutil>=5.9         # backend/procs.py — kills one stuck target's browser, not all of them
 pandas>=2.0
 requests>=2.31
 lxml>=5.0
@@ -12,4 +13,3 @@ pytest>=8.0
 # Without it the matcher falls back to an API key, or to leaving uncertain
 # rows for a person — nothing else breaks.
 google-auth>=2.0
-psutil

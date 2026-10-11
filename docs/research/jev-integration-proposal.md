@@ -70,6 +70,15 @@ code-level claim above was re-checked here.
 
 ### 4A. A worker pool for display-only targets — the one real gain
 
+> **Superseded (2026-10-11).** Built, but as one *process* per target rather than
+> threads: `backend/worker.py` + `backend/procs.py`, scheduled by `backend/app.py`.
+> Threads fail on two things found in the code: the 420s guard killed every
+> Chromium the server owned (one stuck page would take its neighbours down), and
+> HAR analysis holds the GIL, which stalls every other session's polling. Each
+> worker sits in a Windows Job Object, so a target can be killed alone and nothing
+> outlives the API. Default 10 at once, at most 20; watch targets keep their own
+> serial headed lane, as proposed. See `backend/README.md`.
+
 Today `backend/app.py::_run_worker` opens one `sync_playwright()` and one browser and
 loops through targets one at a time (`core/cli.py` does the same).
 

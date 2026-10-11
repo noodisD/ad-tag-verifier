@@ -11,7 +11,9 @@ let src = '"use strict";' + m[1];
 src = src.replace(/\s*checkBackend\(\);\s*$/, "\n");
 // Names an older copy of the page may lack come out as null.
 const opt = ["hasMobToken", "workingUnbooked", "bookedFired", "isUnshown", "unshownOnly",
-             "deliveredUnfired", "pickedVendor"]
+             "deliveredUnfired", "pickedVendor", "runOptions", "clampParallel", "renderVerify",
+             "watchActiveOf", "settleUnfinished", "cancelRun", "endWatch", "runScan",
+             "runVerification", "clearAll"]
   .map(n => `${n}: typeof ${n} === 'undefined' ? null : ${n}`).join(", ");
 src += "\n;globalThis.__x = {state, extract, reportRows, reportText, reportHtml, renderScan, renderMatch,"
      + " guessViewport, sheetIndex, " + opt + "};";
@@ -42,4 +44,6 @@ ctx.window = ctx; ctx.window.addEventListener = () => {};
 ctx.globalThis = ctx;
 vm.createContext(ctx);
 vm.runInContext(src, ctx, { filename: "index.html.js" });
-module.exports = { x: ctx.__x, els };
+// `ctx` is exported so a test can stand in for the network (ctx.fetch) and the
+// clock (ctx.setTimeout) and drive a run from start to finish.
+module.exports = { x: ctx.__x, els, ctx };

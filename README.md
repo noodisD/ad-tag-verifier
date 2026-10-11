@@ -279,9 +279,11 @@ the API; click it to re-check if you started the backend afterwards.
 
 Endpoints: `/discover` (scan pages), `/verify` (check against expected IDs),
 `/match` (pair email to sheet), `/watch/<run_id>/done` (the operator says they
-have finished clicking in watch mode). Runs are backgrounded and polled; a run
-that cannot start — usually because `playwright install chromium` was never
-run — reports that rather than finishing quietly with every row pending.
+have finished clicking in watch mode), `/cancel/<run_id>`. Runs are
+backgrounded and polled; a run that cannot start — usually because
+`playwright install chromium` was never run — reports that rather than
+finishing quietly with every row pending. Pages are checked in parallel, 10 at
+a time by default, each in its own browser process — see `backend/README.md`.
 
 ## The CLI
 
@@ -291,10 +293,15 @@ browser at all:
 ```bash
 python -m core.cli profile "<url>"                 # how would this be driven?
 python -m core.cli capture --jobs jobs.json --advertiser "SomeBrand"
-python -m core.cli analyze core/artifacts/<run>    # re-read, no browser
-python -m core.cli report  core/artifacts/<run>
+python -m core.cli analyze <artifacts>/<run>       # re-read, no browser
+python -m core.cli report  <artifacts>/<run>
 python -m pytest core/tests backend/tests -q
 ```
+
+`<artifacts>` is `%LOCALAPPDATA%\ad-tag-verifier\artifacts` unless
+`TAGVERIFIER_ARTIFACTS` says otherwise — outside the repo, so a run's HARs are
+not synced to OneDrive. Runs from before this change are still in
+`core/artifacts/`.
 
 `profile` opens no browser — it is the cheapest way to confirm a new
 `profiles.yaml` entry does what you meant.
@@ -303,4 +310,5 @@ python -m pytest core/tests backend/tests -q
 
 A run artifact carries real campaign IDs and publisher URLs. HARs are recorded
 in `minimal` mode, which omits response bodies and cookies, but they are still
-campaign data — `core/artifacts/` is gitignored, as is `.env`.
+campaign data — they are written outside the repo by default, `core/artifacts/`
+(the old location) is gitignored, and so is `.env`.

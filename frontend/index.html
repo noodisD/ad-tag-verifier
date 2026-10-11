@@ -234,6 +234,10 @@
                         border: 1px solid var(--color-neutral-400); background: #fff; }
   /* A run that failed has something to say; it should not read like a hint. */
   .backend-hint.err { color: var(--status-fail); }
+  .run-opts { display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }
+  .run-opts input[type="number"] { width: 4.5em; }
+  .run-opts label.check { display: flex; align-items: center; gap: 4px; margin: 0;
+                          text-transform: none; letter-spacing: 0; font-size: 12px; }
 
   .verify-list { display: flex; flex-direction: column; border: 2px solid var(--color-text); }
   .verify-row {
@@ -451,6 +455,14 @@
         </div>
         <div>
           <button type="button" class="btn-outline" id="runVerify" disabled>Run verification</button>
+          <div class="backend-hint run-opts">
+            <div>
+              <label for="parallelVerify">parallel</label>
+              <input id="parallelVerify" type="number" min="1" max="20" step="1" value="10"
+                     title="how many URLs are checked at once, each in its own browser. 10 is the tested setting; 16-20 may need a few rows re-run">
+            </div>
+            <label class="check"><input id="showBrowserVerify" type="checkbox"> show browser (one at a time)</label>
+          </div>
           <div class="backend-hint" id="backendHint"></div>
         </div>
       </div>
@@ -466,6 +478,14 @@
         <div>
           <button type="button" class="btn-outline" id="runScan" disabled>Scan test pages</button>
           <button type="button" class="btn-outline" id="rerunUnresolved" hidden></button>
+          <div class="backend-hint run-opts">
+            <div>
+              <label for="parallelScan">parallel</label>
+              <input id="parallelScan" type="number" min="1" max="20" step="1" value="10"
+                     title="how many test pages are scanned at once, each in its own browser. 10 is the tested setting: at 16-20 the publisher occasionally serves a different creative, so a few rows may need a re-run">
+            </div>
+            <label class="check"><input id="showBrowserScan" type="checkbox"> show browser (one at a time)</label>
+          </div>
           <div class="backend-hint">
             <label for="advertiser">advertiser</label>
             <input id="advertiser" type="text" list="advertisers" placeholder="e.g. Shell" size="22">
@@ -966,7 +986,11 @@ const state = {
   scanning: false,
   scanError: "",
   scanRunId: null,     // needed to tell the backend a watch is finished
+  verifyRunId: null,   // ...and to cancel a run when the page is cleared
   watchIds: [],        // rows the browser has been handed over for
+  watchActive: null,   // the one of them whose window is open now
+  parallel: 10,        // test pages run at once, each in its own browser
+  showBrowser: false,  // visible windows instead — one at a time
   selectedVendors: new Set(),
   vendorTouched: false, // once the user picks, stop auto-selecting
   _seenRows: new Set(),
@@ -1123,12 +1147,15 @@ function extract(units, sourceLine) {
 function clearAll() {
   // Cancels anything in flight. A poll that outlives the reset would write
   // its results onto the next session's groups, which reuse the same ids.
-  runToken++;
+  // The backend is told too: with ten browsers at a time, a run nobody is
+  // watching any more should not go on loading pages.
+  [state.scanning && state.scanRunId, state.verifying && state.verifyRunId].forEach(cancelRun);
+  scanToken++; verifyToken++;
   state.rows = []; state.groups = []; state.testTargets = []; state.sources = [];
   state.filter = "All"; state.verify = {}; state.verifying = false; state.phase = "idle";
   state.scan = {}; state.scanning = false;
   state.runError = ""; state.scanError = ""; state.parseNote = "";
-  state.scanRunId = null; state.watchIds = [];
+  state.scanRunId = null; state.verifyRunId = null; state.watchIds = []; state.watchActive = null;
   state.selectedVendors.clear(); state.vendorTouched = false;
   state._seenRows.clear(); state._seenTargets.clear();
   document.getElementById("pasteInput").value = "";
@@ -1799,26 +1826,46 @@ function noteApiError(err) {
   return err.message;
 }
 
-// Bumped to cancel whatever is in flight; clearAll() does exactly that.
+// Bumped to cancel whatever is in flight; clearAll() bumps both.
 // Without it, a poll scheduled before the reset still fires afterwards and
 // writes stale results onto freshly renumbered groups, because gid restarts
-// at "g0".
-let runToken = 0;
+// at "g0". One each for scan and verify: sharing one made starting a scan
+// cancel a verify's poll, which left `verifying` true for the rest of the
+// session and the run controls locked with it.
+let scanToken = 0, verifyToken = 0;
 
-function pollRun(path, runId, token, onData, onEnd, intervalMs) {
+// Stop the backend running a run nobody is watching any more.
+function cancelRun(runId) {
+  if (runId) apiPost("/cancel/" + encodeURIComponent(runId), {}, 5000).catch(() => {});
+}
+
+// A run that ended without its rows being settled — the poll gave up, or the
+// request never got through — must not leave them "running": the elapsed
+// time freezes, the button counts them as running, and "Re-run unresolved"
+// does not offer them.
+function settleUnfinished(store, why) {
+  Object.keys(store).forEach(id => {
+    const r = store[id];
+    if (r && (r.status === "pending" || r.status === "running")) {
+      store[id] = { status: "error", detail: why || "the run ended before this page finished" };
+    }
+  });
+}
+
+function pollRun(path, runId, live, onData, onEnd, intervalMs) {
   let misses = 0;
   const tick = () => {
-    if (token !== runToken) return;
+    if (!live()) return;
     apiGet(path + "/" + runId)
       .then(data => {
-        if (token !== runToken) return;
+        if (!live()) return;
         misses = 0;
         onData(data);
         if (data.done) onEnd(data.error || null);
         else setTimeout(tick, intervalMs);
       })
       .catch(err => {
-        if (token !== runToken) return;
+        if (!live()) return;
         // A worker holding the GIL while Playwright drives a page can cost us
         // a poll or two. Losing one tick is not losing the run.
         if (!err.reachable && ++misses <= 4) {
@@ -1866,31 +1913,85 @@ function applyRejected(store, rejected) {
   });
 }
 
+// ── run options ─────────────────────────────────────────────────────────
+// How many pages the backend loads at once, each in a browser of its own,
+// or whether to watch them instead. Watching means one at a time: Chrome
+// throttles a window it considers hidden, and with several open every one
+// but the front one is hidden.
+const PARALLEL_MAX = 20;
+const RUN_OPT_IDS = { parallel: ["parallelScan", "parallelVerify"],
+                      show: ["showBrowserScan", "showBrowserVerify"] };
+
+function clampParallel(v) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? Math.max(1, Math.min(n, PARALLEL_MAX)) : 10;
+}
+
+function runOptions() {
+  return state.showBrowser ? { concurrency: 1, headed: true }
+                           : { concurrency: clampParallel(state.parallel), headed: false };
+}
+
+function renderRunOptions() {
+  const busy = state.scanning || state.verifying;
+  RUN_OPT_IDS.parallel.forEach(id => {
+    const el = document.getElementById(id);
+    el.value = String(clampParallel(state.parallel));
+    el.disabled = busy || state.showBrowser;
+  });
+  RUN_OPT_IDS.show.forEach(id => {
+    const el = document.getElementById(id);
+    el.checked = state.showBrowser;
+    el.disabled = busy;
+  });
+}
+
+// "loading page… 37s": with ten rows loading at once, which one is stuck is
+// the question, and a bare "loading" does not answer it.
+function withElapsed(text, r) {
+  return r && Number.isFinite(r.elapsed_s) ? text + " " + r.elapsed_s + "s" : text;
+}
+
+function runningNote(store) {
+  const n = Object.values(store || {}).filter(r => r && r.status === "running").length;
+  return n ? " · " + n + " running" : "";
+}
+
 function runVerification() {
   const targets = state.groups
     .filter(g => g.verifiable)
     .map(g => ({ id: g.gid, platform: g.platform, url: g.url, expected: g.expected }));
   if (!targets.length || state.verifying) return;
 
-  const token = ++runToken;
+  const token = ++verifyToken;
+  const live = () => token === verifyToken;
   state.verifying = true;
   state.runError = "";
   targets.forEach(t => { state.verify[t.id] = { status: "pending" }; });
   renderVerify();
 
-  apiPost("/verify", { targets })
+  apiPost("/verify", { targets, ...runOptions() })
     .then(data => {
+      // Cleared while the request was still on its way: the page has
+      // forgotten this run, so the backend must be told to as well.
+      if (!live()) { cancelRun(data.run_id); return; }
       applyRejected(state.verify, data.rejected);
+      state.verifyRunId = data.run_id;
       renderVerify();
-      pollRun("/verify", data.run_id, token,
+      pollRun("/verify", data.run_id, live,
         d => { Object.assign(state.verify, d.results); renderVerify(); },
-        err => { state.verifying = false; state.runError = err || ""; renderVerify(); },
+        err => {
+          settleUnfinished(state.verify, err);
+          state.verifying = false; state.runError = err || ""; renderVerify();
+        },
         800);
     })
     .catch(err => {
+      if (!live()) return;
       state.verifying = false;
       state.runError = noteApiError(err);
       applyRejected(state.verify, err.rejected);
+      settleUnfinished(state.verify, state.runError);
       renderVerify();
     });
 }
@@ -1908,7 +2009,8 @@ function renderVerify() {
   const verifiable = state.groups.filter(g => g.verifiable);
   const runBtn = document.getElementById("runVerify");
   runBtn.disabled = state.backend !== "up" || !verifiable.length || state.verifying;
-  runBtn.textContent = state.verifying ? "Verifying…" : "Run verification";
+  runBtn.textContent = state.verifying ? "Verifying…" + runningNote(state.verify) : "Run verification";
+  renderRunOptions();
 
   const hint = document.getElementById("backendHint");
   hint.textContent = state.runError ? state.runError
@@ -1935,7 +2037,8 @@ function renderVerify() {
     // tool exists to draw. Prefer the verdict when the backend sends one.
     const pillClass = verd ? verd.cls
       : ["pending", "running", "pass", "fail", "error"].includes(v.status) ? v.status : "pending";
-    const pillText = verd ? verd.text : v.status === "idle" ? "not run" : v.status;
+    const pillText = verd ? verd.text : v.status === "idle" ? "not run"
+      : v.status === "running" ? withElapsed("running", v) : v.status;
     const expectStr = Object.entries(g.expected).map(([k, val]) => k + "=" + val).join(" · ");
     const meta = [v.strategy, v.duration_s ? v.duration_s + "s" : null].filter(Boolean).join(" · ");
     const observedRow = (v.status === "fail" || v.status === "pass") && v.observed
@@ -1962,11 +2065,28 @@ function renderVerify() {
 
 // Watch mode hands the browser to a person; this hands it back. Over HTTP
 // there is no Ctrl+C, so without this the run could only end by timing out.
+// It names the row, because a run can hold more than one watch target and
+// only the one whose window is open now may be ended.
 function endWatch() {
-  if (!state.scanRunId) return;
-  apiPost("/watch/" + encodeURIComponent(state.scanRunId) + "/done", {}, 15000)
-    .then(() => { state.watchIds = []; renderScan(); })
-    .catch(err => { state.scanError = noteApiError(err); renderScan(); });
+  if (!state.scanRunId || !state.watchActive) return;
+  apiPost("/watch/" + encodeURIComponent(state.scanRunId) + "/done",
+          { id: state.watchActive }, 15000)
+    .then(() => { state.watchActive = null; renderScan(); })
+    .catch(err => {
+      // 409: that window is already closed (a second click, or the run moved
+      // on to the next watch row). Not an error worth leaving up for the
+      // rest of the run — the next poll says what is open now.
+      if (err && err.status === 409) { state.watchActive = null; renderScan(); return; }
+      state.scanError = noteApiError(err); renderScan();
+    });
+}
+
+// Which watch row has its window open. A backend from before parallel runs
+// does not say, and ran its watch rows with the whole run headed: then any
+// watch row of a run in flight is the one.
+function watchActiveOf(d) {
+  if (d && "watch_active" in d) return d.watch_active || null;
+  return (d && d.watch_ids && d.watch_ids[0]) || state.watchIds[0] || null;
 }
 
 // ── Step 1: scan ────────────────────────────────────────────────────────
@@ -1989,7 +2109,8 @@ function runScan(only) {
                                    viewport: guessViewport(t), wait_for: waitFor }));
   if (!targets.length || state.scanning) return;
 
-  const token = ++runToken;
+  const token = ++scanToken;
+  const live = () => token === scanToken;
   state.scanning = true;
   state.scanError = "";
   targets.forEach(t => { state.scan[t.id] = { status: "pending" }; });
@@ -1997,16 +2118,21 @@ function runScan(only) {
 
   const redraw = () => { renderScan(); renderVendors(); renderMatch(); };
 
-  apiPost("/discover", { targets })
+  apiPost("/discover", { targets, ...runOptions() })
     .then(data => {
+      // Cleared while the request was still on its way: the page has
+      // forgotten this run, so the backend must be told to as well.
+      if (!live()) { cancelRun(data.run_id); return; }
       applyRejected(state.scan, data.rejected);
       state.scanRunId = data.run_id;
       state.watchIds = data.watch_ids || [];
+      state.watchActive = null;
       redraw();
-      pollRun("/discover", data.run_id, token,
+      pollRun("/discover", data.run_id, live,
         d => {
           Object.assign(state.scan, d.results);
           state.watchIds = d.watch_ids || state.watchIds;
+          state.watchActive = watchActiveOf(d);
           // A vendor is only offered as a choice once it has actually been
           // seen on at least one page — the picker reflects this campaign,
           // not a hardcoded vendor list.
@@ -2022,14 +2148,17 @@ function runScan(only) {
           }
           redraw();
         },
-        err => { state.scanning = false; state.scanError = err || "";
-                 state.watchIds = []; redraw(); },
+        err => { settleUnfinished(state.scan, err);
+                 state.scanning = false; state.scanError = err || "";
+                 state.watchIds = []; state.watchActive = null; redraw(); },
         1000);
     })
     .catch(err => {
+      if (!live()) return;
       state.scanning = false;
       state.scanError = noteApiError(err);
       applyRejected(state.scan, err.rejected);
+      settleUnfinished(state.scan, state.scanError);
       redraw();
     });
 }
@@ -2146,8 +2275,9 @@ function renderScan() {
   btn.disabled = state.backend !== "up" || state.scanning;
   const done = Object.values(state.scan).filter(r => r.status === "done" || r.status === "none" || r.status === "error").length;
   btn.textContent = state.scanning
-    ? "Scanning… " + done + "/" + state.testTargets.length
+    ? "Scanning… " + done + "/" + state.testTargets.length + runningNote(state.scan)
     : (done ? "Re-scan " : "Scan ") + state.testTargets.length + " test page" + (state.testTargets.length === 1 ? "" : "s");
+  renderRunOptions();
   const again = document.getElementById("rerunUnresolved");
   const unresolved = unresolvedTargets();
   again.hidden = state.scanning || !unresolved.length;
@@ -2157,7 +2287,10 @@ function renderScan() {
               + "confirmed. The rows that came back clean are kept as they are.";
 
   const scanHint = document.getElementById("scanHint");
-  const watching = state.scanning && state.watchIds.length;
+  // Only while a watch row's window is actually open. The watch rows now run
+  // beside the rest, one at a time, so "this run has a watch row" no longer
+  // means anyone is being waited on.
+  const watching = state.scanning && !!state.watchActive;
   if (watching) {
     // The browser window is open on the operator's own screen and the run is
     // blocked on them. Say so plainly and give them the way out — there is no
@@ -2231,7 +2364,7 @@ function renderScan() {
       ? deliveredUnfired(r) || [] : [];
     const notViewed = delivered.length > 0 && unshownOnly({ delivered }, r.diagnosis || []);
     if (notViewed) doneText = "delivered, not viewed";
-    const text = { idle: "not scanned", pending: "queued", running: "loading page…",
+    const text = { idle: "not scanned", pending: "queued", running: withElapsed("loading page…", r),
                    done: doneText, none: notViewed ? doneText : "no tags fired", error: "error" }[r.status] || r.status;
     // Green only when the click tracked too. An impression on its own is a
     // half-working placement, and painting it as a pass is how a missing
@@ -2284,12 +2417,12 @@ function renderScan() {
       : working.length ? `<div class="match-detail">${escapeHtml(working.map(workingUnbookedText).join("; "))}</div>`
       : delivered.length ? `<div class="match-detail">${escapeHtml(deliveredText(r, delivered))}</div>`
       : "";
-    const isWatch = state.watchIds.includes(t.tid);
+    const waitingOnYou = state.scanning && state.watchActive === t.tid;
     return `
       <div class="scan-row">
         <span class="plat">${escapeHtml(targetLabel(t))}</span>
         <span class="found">${(found + inMarkup) || `<span class="u" title="${escapeHtml(t.url)}">${escapeHtml(t.url.slice(0, 90))}</span>`}</span>
-        <span class="status-pill ${isWatch && state.scanning ? "warn" : pill}">${escapeHtml(isWatch && state.scanning ? "waiting for you" : text)}</span>
+        <span class="status-pill ${waitingOnYou ? "warn" : pill}">${escapeHtml(waitingOnYou ? "waiting for you" : text)}</span>
         ${detail}
       </div>`;
   }).join("");
@@ -2676,6 +2809,27 @@ function render() {
   el.addEventListener("change", () => {
     try { localStorage.setItem("atv.advertiser", el.value.trim()); } catch (e) {}
   });
+})();
+
+// Both toolbars show the same two settings, kept across sessions like the
+// advertiser.
+(function rememberRunOptions() {
+  try {
+    const p = localStorage.getItem("atv.parallel");
+    if (p) state.parallel = clampParallel(p);
+    state.showBrowser = localStorage.getItem("atv.showBrowser") === "1";
+  } catch (e) { /* private window, or site data blocked */ }
+  RUN_OPT_IDS.parallel.forEach(id => document.getElementById(id).addEventListener("change", e => {
+    state.parallel = clampParallel(e.target.value);
+    try { localStorage.setItem("atv.parallel", String(state.parallel)); } catch (err) {}
+    renderRunOptions();
+  }));
+  RUN_OPT_IDS.show.forEach(id => document.getElementById(id).addEventListener("change", e => {
+    state.showBrowser = !!e.target.checked;
+    try { localStorage.setItem("atv.showBrowser", state.showBrowser ? "1" : "0"); } catch (err) {}
+    renderRunOptions();
+  }));
+  renderRunOptions();
 })();
 
 // The button lives inside a re-rendered hint, so it is delegated.

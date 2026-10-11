@@ -25,7 +25,9 @@ described as a different format, and everything downstream inherited it.
 
 import json
 import os
+import random
 import re
+import time
 import urllib.error
 import urllib.request
 from difflib import SequenceMatcher
@@ -290,6 +292,9 @@ class GeminiMatcher:
         self.timeout = timeout
         self._creds_path = credentials_path or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
         self._creds = None
+        # Why the last generate() came back empty, when it was the call that
+        # failed rather than the model declining. None after a real answer.
+        self.last_error = None
 
     # ── auth ─────────────────────────────────────────────────────────────
 
@@ -360,13 +365,24 @@ class GeminiMatcher:
         except (TypeError, json.JSONDecodeError):
             return None
 
+    RETRY_STATUS = (429, 500, 503)
+    MAX_RETRIES = 2
+
     def generate(self, contents):
-        """One request; -> the model's reply text, or None.
+        """One answer; -> the model's reply text, or None.
 
         Split out of `choose` so the vision fallback in `ai.creative_click`
         can send an image through this same client and these same
         credentials, rather than opening a second route to the model.
+
+        A rate limit or a passing server error is retried, but only inside
+        `timeout` as a whole: the vision step budgets one call at that length
+        (strategies.VISION_LOOK_S), and ten runs at once are exactly when the
+        quota answers 429. A timeout is not retried — it already spent the
+        budget. When the answer is None because the call failed, last_error
+        says how; until now a 429 read as "the model looked and found nothing".
         """
+        self.last_error = None
         url, headers = self._endpoint_and_headers()
         if not url:
             return None
@@ -374,18 +390,48 @@ class GeminiMatcher:
         body = {"contents": contents,
                 "generationConfig": {"temperature": 0,
                                      "responseMimeType": "application/json"}}
-        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
-                                     headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                payload = json.load(r)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
-            return None
+        data = json.dumps(body).encode("utf-8")
+        deadline = time.monotonic() + self.timeout
+        attempt = 0
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0.5:
+                self.last_error = self.last_error or "out of time"
+                return None
+            req = urllib.request.Request(url, data=data, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=left) as r:
+                    payload = json.load(r)
+                self.last_error = None       # a retry that got through
+                break
+            except urllib.error.HTTPError as e:
+                self.last_error = ("rate limited" if e.code == 429 else "model call failed") \
+                    + f" (HTTP {e.code})"
+                if e.code not in self.RETRY_STATUS or attempt >= self.MAX_RETRIES:
+                    return None
+                wait = _retry_after(e)
+                if wait is None:
+                    wait = min(2 ** attempt, 4) + random.uniform(0, 0.5)
+                if wait >= deadline - time.monotonic() - 0.5:
+                    return None              # no time left for another try
+                time.sleep(wait)
+                attempt += 1
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
+                self.last_error = f"{type(e).__name__}: {str(e)[:80]}"
+                return None
 
         try:
             return payload["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, TypeError):
             return None
+
+
+def _retry_after(err):
+    """Seconds the server asked us to wait, if it said so in seconds."""
+    try:
+        return max(0.0, float(err.headers.get("Retry-After")))
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def default_model():

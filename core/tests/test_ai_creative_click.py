@@ -203,3 +203,30 @@ def test_markup_only_beacons_are_not_a_pair():
     fired = [{**_imp("90626723"), "evidence": "in_markup"}, _click("90626723")]
     assert cc.own_unbooked(fired, "90626723", KORPO) is None
     assert cc.own_unbooked([_imp("90626723"), _click("90626723")], None, KORPO) is None
+
+
+class _RateLimited:
+    """A GeminiMatcher whose call failed: no reply, and last_error says why."""
+    available = True
+    last_error = "rate limited (HTTP 429)"
+
+    def generate(self, contents):
+        return None
+
+
+class _Declined(_RateLimited):
+    last_error = None
+
+
+def test_a_failed_call_is_not_reported_as_the_model_finding_nothing():
+    """A 429 used to read "last answer: no usable answer" — as if the model had
+    looked at the page. It never got to; the run log has to say so."""
+    why = {}
+    assert cc.locate(cc.VisionMatcher(_RateLimited()), b"png", "SomeBrand", VP, why=why) is None
+    assert "429" in why.get("error", ""), why
+
+
+def test_a_model_that_answered_nothing_is_still_a_refusal():
+    why = {}
+    assert cc.locate(cc.VisionMatcher(_Declined()), b"png", "SomeBrand", VP, why=why) is None
+    assert "error" not in why and why["reply"] == "no usable answer"

@@ -48,10 +48,14 @@ tests/            fast, browser-free
 ```bash
 python -m core.cli profile "<url>"                 # how would this be driven?
 python -m core.cli capture --url "<url>" --expect 90069259 --viewport mobile
-python -m core.cli analyze core/artifacts/<run>    # re-read, no browser
-python -m core.cli report  core/artifacts/<run>
+python -m core.cli analyze <artifacts>/<run>       # re-read, no browser
+python -m core.cli report  <artifacts>/<run>
 python -m pytest core/tests -q
 ```
+
+`<artifacts>` is `session.default_artifact_root()`: `TAGVERIFIER_ARTIFACTS`, else
+`%LOCALAPPDATA%\ad-tag-verifier\artifacts` — outside the OneDrive-synced repo.
+`capture --out` overrides it for one run.
 
 `profile` runs no browser — it is the cheapest way to confirm a new
 `profiles.yaml` entry does what you meant.
@@ -87,6 +91,7 @@ failure this is really for.
 
 A run artifact carries real campaign IDs and publisher URLs. HARs are recorded
 in `minimal` mode, which omits response bodies and cookies, but they are still
-campaign data — `core/artifacts/` is gitignored. Test fixtures under
+campaign data — written outside the repo by default, and `core/artifacts/` (the
+old location) is gitignored. Test fixtures under
 `core/tests/fixtures/` are the deliberate exception and must be sanitized
 first.

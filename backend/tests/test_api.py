@@ -3,68 +3,40 @@
 Each test here pins a failure that actually happened and was invisible from
 the UI — the run looked finished, or the row stayed pending, with nothing
 said about why.
+
+Workers are the stand-ins from conftest.py (`launcher`); test_pool.py covers
+the scheduling itself.
 """
-import time
-
-import pytest
-
 import app as api
+from conftest import await_done
 
 
-@pytest.fixture
-def client():
-    api.RUNS.clear()
-    api.app.config["TESTING"] = True
-    with api.app.test_client() as c:
-        yield c
-
-
-class _ExplodingPlaywright:
-    """Stands in for a machine where `playwright install chromium` never ran."""
-    def __enter__(self):
-        raise RuntimeError("Executable doesn't exist at ...ms-playwright...")
-
-    def __exit__(self, *a):
-        return False
-
-
-def _await_done(client, path, run_id, timeout=5):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        body = client.get(f"{path}/{run_id}").get_json()
-        if body["done"]:
-            return body
-        time.sleep(0.02)
-    raise AssertionError("run never finished")
-
-
-def test_dead_browser_is_reported_not_silently_finished(client, monkeypatch):
+def test_dead_browser_is_reported_not_silently_finished(client, launcher):
     """The bug: the outer try had only `finally`, so a launch failure escaped
     into threading.excepthook. `done` flipped to true with every row still
     "pending" — indistinguishable from a clean run that found nothing."""
-    monkeypatch.setattr(api, "sync_playwright", lambda: _ExplodingPlaywright())
+    launcher.plan = {"g0": "fatal"}
 
     r = client.post("/verify", json={"targets": [
         {"id": "g0", "url": "https://example.test/a", "platform": "Adform"}]})
     assert r.status_code == 200
 
-    body = _await_done(client, "/verify", r.get_json()["run_id"])
+    body = await_done(client, "/verify", r.get_json()["run_id"])
     assert body["error"], "a run that could not start must say so"
     assert body["results"]["g0"]["status"] == "error"
     assert body["results"]["g0"]["status"] != "pending"
 
 
-def test_run_id_is_scoped_to_its_endpoint(client, monkeypatch):
+def test_run_id_is_scoped_to_its_endpoint(client, launcher):
     """/verify and /discover return different shapes. Reading one on the
     other's endpoint used to return 200 with the wrong shape, which the UI
     then quietly rendered as empty rows."""
-    monkeypatch.setattr(api, "sync_playwright", lambda: _ExplodingPlaywright())
-
     run_id = client.post("/discover", json={
         "targets": [{"id": "t0", "url": "https://example.test/a"}]}).get_json()["run_id"]
 
     assert client.get(f"/discover/{run_id}").status_code == 200
     assert client.get(f"/verify/{run_id}").status_code == 404
+    await_done(client, "/discover", run_id)
 
 
 def test_unusable_targets_are_explained(client):
@@ -75,11 +47,9 @@ def test_unusable_targets_are_explained(client):
     assert "id" in reasons and "platform" in reasons
 
 
-def test_partly_unusable_batch_still_runs_and_flags_the_rest(client, monkeypatch):
+def test_partly_unusable_batch_still_runs_and_flags_the_rest(client, launcher):
     """A dropped target used to vanish from results entirely, leaving its row
     pending forever."""
-    monkeypatch.setattr(api, "sync_playwright", lambda: _ExplodingPlaywright())
-
     r = client.post("/verify", json={"targets": [
         {"id": "g0", "url": "https://example.test/a", "platform": "Adform"},
         {"id": "g1", "url": "https://example.test/b"},          # no platform
@@ -87,7 +57,8 @@ def test_partly_unusable_batch_still_runs_and_flags_the_rest(client, monkeypatch
     assert r.status_code == 200
     assert [x["id"] for x in r.get_json()["rejected"]] == ["g1"]
 
-    body = _await_done(client, "/verify", r.get_json()["run_id"])
+    body = await_done(client, "/verify", r.get_json()["run_id"])
+    assert body["results"]["g0"]["status"] == "done"
     assert body["results"]["g1"]["status"] == "error"
     assert "platform" in body["results"]["g1"]["detail"]
 
@@ -95,6 +66,35 @@ def test_partly_unusable_batch_still_runs_and_flags_the_rest(client, monkeypatch
 def test_malformed_payload_is_a_400_not_a_500(client):
     for payload in ({"targets": {"id": "g0"}}, {"targets": ["nope"]}, {}):
         assert client.post("/verify", json=payload).status_code == 400
+
+
+def test_a_duplicate_id_is_rejected_without_clobbering_the_first(client, launcher):
+    """Two targets with one id would share a folder, a HAR and a result key.
+    Rejecting the second must not overwrite the first row's own result."""
+    r = client.post("/discover", json={"targets": [
+        {"id": "t0", "url": "https://example.test/a"},
+        {"id": "T0", "url": "https://example.test/b"}]})      # same folder on Windows
+    assert [x["reason"] for x in r.get_json()["rejected"]] == ["duplicate id"]
+    body = await_done(client, "/discover", r.get_json()["run_id"])
+    assert body["results"]["t0"]["status"] == "done"
+    assert launcher.started == ["t0"]
+
+
+def test_an_id_that_could_leave_the_run_folder_is_rejected(client, launcher):
+    r = client.post("/discover", json={"targets": [{"id": "../x", "url": "https://example.test/a"}]})
+    assert r.status_code == 400
+    assert launcher.started == []
+
+
+def test_ids_windows_cannot_make_a_folder_of_are_rejected(client, launcher):
+    """Writing NUL\\job.json raises on Windows. That used to escape and end the
+    slot's thread; "A1." and "A1" are one folder there, too."""
+    r = client.post("/discover", json={"targets": [
+        {"id": i, "url": "https://example.test/a"} for i in ("NUL", "con.txt", "COM1", "a.", "console")]})
+    assert r.status_code == 200
+    assert sorted(x["id"] for x in r.get_json()["rejected"]) == ["COM1", "NUL", "a.", "con.txt"]
+    await_done(client, "/discover", r.get_json()["run_id"])
+    assert launcher.started == ["console"], "a name that merely starts like one is fine"
 
 
 # ── /match ───────────────────────────────────────────────────────────────
@@ -141,88 +141,52 @@ WATCH_URL = "https://preview.adnami.io/creative/abc"     # profiles.yaml -> watc
 LOAD_URL = "https://displayvideo.google.com/doubleclick/preview/main?creativeId=x"
 
 
-def test_a_watch_target_makes_the_run_headed(client, monkeypatch):
+def test_a_watch_target_runs_headed(client, launcher):
     """There is nothing to watch in a headless window."""
-    seen = {}
-
-    def fake_worker(run_id, targets, work, run_dir, headless=True):
-        seen["headless"] = headless
-        api._finish_run(run_id)
-
-    monkeypatch.setattr(api, "_run_worker",
-                        lambda *a, **k: fake_worker(*a, **k))
-    monkeypatch.setattr(api.threading, "Thread",
-                        lambda target, args, daemon: type(
-                            "T", (), {"start": lambda s: target(*args)})())
-
+    from conftest import await_that
+    launcher.plan = {"t0": "watch"}
     r = client.post("/discover", json={"targets": [{"id": "t0", "url": WATCH_URL}]})
     assert r.status_code == 200
+    run_id = r.get_json()["run_id"]
     assert r.get_json()["watch_ids"] == ["t0"]
-    assert seen["headless"] is False
+    await_that(lambda: client.get(f"/discover/{run_id}").get_json()["watch_active"] == "t0")
+    client.post(f"/watch/{run_id}/done", json={"id": "t0"})
+    await_done(client, "/discover", run_id)
+    assert launcher.headless["t0"] is False
 
 
-def test_a_normal_run_stays_headless(client, monkeypatch):
-    seen = {}
-    monkeypatch.setattr(api, "_run_worker",
-                        lambda run_id, t, w, d, headless=True: (
-                            seen.update(headless=headless), api._finish_run(run_id)))
-    monkeypatch.setattr(api.threading, "Thread",
-                        lambda target, args, daemon: type(
-                            "T", (), {"start": lambda s: target(*args)})())
-
+def test_a_normal_run_stays_headless(client, launcher):
     r = client.post("/discover", json={"targets": [{"id": "t0", "url": LOAD_URL}]})
     assert r.get_json()["watch_ids"] == []
-    assert seen["headless"] is True
+    await_done(client, "/discover", r.get_json()["run_id"])
+    assert launcher.headless["t0"] is True
 
 
-def test_the_operator_can_end_a_watch(client, monkeypatch):
+def test_the_operator_can_end_a_watch(client, launcher):
     """Over HTTP there is no Ctrl+C, so without this a watch can only time out."""
-    monkeypatch.setattr(api.threading, "Thread",
-                        lambda target, args, daemon: type("T", (), {"start": lambda s: None})())
-
+    from conftest import await_that
+    launcher.plan = {"t0": "watch"}
     run_id = client.post("/discover", json={
         "targets": [{"id": "t0", "url": WATCH_URL}]}).get_json()["run_id"]
 
-    event = api.RUNS[run_id]["done_event"]
-    assert not event.is_set()
-    assert client.post(f"/watch/{run_id}/done").status_code == 200
-    assert event.is_set(), "the stop signal the capture loop polls must be set"
+    await_that(lambda: client.get(f"/discover/{run_id}").get_json()["watch_active"] == "t0")
+    assert client.post(f"/watch/{run_id}/done", json={"id": "t0"}).status_code == 200
+    body = await_done(client, "/discover", run_id)
+    assert body["results"]["t0"].get("watched") is True, "the stop signal the capture loop polls must be set"
 
 
 def test_ending_an_unknown_watch_is_a_404(client):
     assert client.post("/watch/nosuchrun/done").status_code == 404
 
 
-def test_the_run_snapshot_names_the_rows_waiting_on_a_person(client, monkeypatch):
-    monkeypatch.setattr(api.threading, "Thread",
-                        lambda target, args, daemon: type("T", (), {"start": lambda s: None})())
+def test_the_run_snapshot_names_the_rows_waiting_on_a_person(client, launcher):
+    launcher.plan = {"t0": "watch"}
     run_id = client.post("/discover", json={
         "targets": [{"id": "t0", "url": WATCH_URL}, {"id": "t1", "url": LOAD_URL}]
     }).get_json()["run_id"]
 
     body = client.get(f"/discover/{run_id}").get_json()
     assert body["watch_ids"] == ["t0"]
-    assert "done_event" not in body, "a threading.Event must never reach JSON"
-
-
-def test_a_target_that_stops_answering_is_cut_off_and_the_next_one_runs(monkeypatch, tmp_path):
-    """kultura.onet.pl sat for 22 minutes in a background run and held every test
-    behind it. The browser is killed from outside the stuck call."""
-    pytest.importorskip("psutil")
-    monkeypatch.setattr(api, "TARGET_TIMEOUT_S", 4)
-    api._create_run("discover", [{"id": "a"}, {"id": "b"}], [])
-    run_id = next(iter(api.RUNS))
-
-    def work(browser, target, run_dir):
-        page = browser.new_page()
-        if target["id"] == "a":
-            page.evaluate("() => new Promise(() => {})")      # never answers
-        page.close()
-        return {"status": "done"}
-
-    t0 = time.time()
-    api._run_worker(run_id, [{"id": "a"}, {"id": "b"}], work, tmp_path)
-    res = api.RUNS[run_id]["results"]
-    assert res["a"]["status"] == "error" and "stopped responding" in res["a"]["detail"]
-    assert res["b"]["status"] == "done"
-    assert time.time() - t0 < 60
+    assert "procs" not in body and "watch_stop" not in body, "process handles must never reach JSON"
+    client.post(f"/cancel/{run_id}")
+    await_done(client, "/discover", run_id)

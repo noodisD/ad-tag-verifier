@@ -2,7 +2,7 @@
 // renderMatch of frontend/index.html against fake scan results. Offline.
 // Run: node frontend/tests/test_report.js — backend/tests/test_frontend_report.py
 // runs it under pytest. Prints "<n> passed, <m> failed"; exits 1 on a failure.
-const { x, els } = require("./harness.js");
+const { x, els, ctx } = require("./harness.js");
 let fails = 0, passes = 0;
 function check(name, cond, extra) {
   if (cond) { passes++; return; }
@@ -375,5 +375,146 @@ check("scan E7: consent wall stays red", s7.includes('status-pill fail">no tags 
 check("scan E4: red 'ID not in sheet'", scanRow("300x600_e4").includes('status-pill fail">ID not in sheet<'), scanRow("300x600_e4"));
 check("scan E2: plain text stays red", scanRow("300x250_e2").includes('status-pill fail">no tags fired<'), scanRow("300x250_e2"));
 
-console.log(`${passes} passed, ${fails} failed`);
-process.exit(fails ? 1 : 0);
+// ── parallel runs ─────────────────────────────────────────────────────────
+if (x.runOptions) {
+  check("clampParallel: below 1 -> 1", x.clampParallel(0) === 1);
+  check("clampParallel: above 20 -> 20", x.clampParallel(99) === 20);
+  check("clampParallel: junk -> default 10", x.clampParallel("abc") === 10);
+  S.parallel = 12; S.showBrowser = false;
+  check("runOptions: parallel", JSON.stringify(x.runOptions()) === '{"concurrency":12,"headed":false}',
+        JSON.stringify(x.runOptions()));
+  S.showBrowser = true;
+  check("runOptions: show browser is one at a time", JSON.stringify(x.runOptions()) === '{"concurrency":1,"headed":true}',
+        JSON.stringify(x.runOptions()));
+  S.showBrowser = false;
+
+  // Scan: a running row says for how long, the button says how many run.
+  const [tA, tB] = S.testTargets;
+  S.scan = { [tA.tid]: { status: "running", elapsed_s: 37 }, [tB.tid]: { status: "pending" } };
+  S.scanning = true; S.watchActive = null;
+  x.renderScan();
+  check("scan: running row shows elapsed", els.scanList.innerHTML.includes("loading page… 37s"), els.scanList.innerHTML.slice(0, 600));
+  check("scan: button counts running rows", els.runScan.textContent.includes("· 1 running"), els.runScan.textContent);
+  check("scan: no watch hint without an open window", !els.scanHint.innerHTML.includes("A browser window is open"));
+  // Only the watch row whose window is open waits on the operator.
+  S.watchIds = [tB.tid, "other"]; S.watchActive = tB.tid;
+  x.renderScan();
+  check("scan: watch hint while a window is open", els.scanHint.innerHTML.includes("A browser window is open"));
+  check("scan: active watch row waits for you", els.scanList.innerHTML.includes('status-pill warn">waiting for you<'));
+  check("scan: one row waiting, not every watch row",
+        els.scanList.innerHTML.split("waiting for you").length === 2);
+  S.scanning = false; S.watchIds = []; S.watchActive = null;
+
+  check("watchActiveOf: backend names none", x.watchActiveOf({ watch_active: null, watch_ids: ["t0"] }) === null);
+  check("watchActiveOf: backend names one", x.watchActiveOf({ watch_active: "t0", watch_ids: ["t0", "t1"] }) === "t0");
+  check("watchActiveOf: older backend -> its watch row", x.watchActiveOf({ watch_ids: ["t3"] }) === "t3");
+
+  // Verify: the same for the self-check list.
+  reset();
+  S.groups = [{ gid: "g0", verifiable: true, platform: "Adform", url: "https://example.test/a", expected: { bn: "1" } }];
+  S.verify = { g0: { status: "running", elapsed_s: 5 } }; S.verifying = true;
+  x.renderVerify();
+  check("verify: running row shows elapsed", els.verifyList.innerHTML.includes(">running 5s<"), els.verifyList.innerHTML);
+  check("verify: button counts running rows", els.runVerify.textContent === "Verifying… · 1 running", els.runVerify.textContent);
+  check("verify: options locked during a run", els.parallelVerify.disabled === true && els.showBrowserVerify.disabled === true);
+  S.verifying = false;
+}
+
+// ── driving a run: the page against a stand-in backend ──────────────────────
+// Each of these is a bug found in review of the parallel runs, and each needs
+// the page's own request/poll code to run, so the network and the clock are
+// replaced (ctx.fetch, ctx.setTimeout) and timers are fired by hand.
+const reply = (status, body) => ({ ok: status < 400, status, json: () => Promise.resolve(body) });
+const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setImmediate(r)); };
+
+function freshRun() {
+  reset(); loadSheet();
+  Object.assign(S, { scanning: false, verifying: false, scan: {}, verify: {}, scanRunId: null,
+                     verifyRunId: null, watchIds: [], watchActive: null, scanError: "", runError: "" });
+}
+
+async function drive() {
+  // The rows of a run whose poll ended early are settled, not left "running".
+  const rows = { a: { status: "running", elapsed_s: 9 }, b: { status: "pending" }, c: { status: "done" } };
+  x.settleUnfinished(rows, "the backend went away");
+  check("settle: running -> error", rows.a.status === "error" && rows.a.detail === "the backend went away", JSON.stringify(rows.a));
+  check("settle: pending -> error", rows.b.status === "error");
+  check("settle: a finished row is untouched", rows.c.status === "done" && !rows.c.detail);
+
+  // Cleared while the POST was still on its way: the run must be cancelled.
+  freshRun(); target("t0", "https://example.test/a", "Rect 300x250", "300x250");
+  let calls = [], release;
+  const gate = new Promise(r => { release = r; });
+  ctx.setTimeout = () => 0;
+  ctx.fetch = (url, o) => {
+    calls.push({ url, method: (o && o.method) || "GET" });
+    if (url.endsWith("/discover")) return gate.then(() => reply(200, { run_id: "r1", rejected: [], watch_ids: [] }));
+    return Promise.resolve(reply(200, {}));
+  };
+  x.runScan();
+  x.clearAll();
+  release(); await settle();
+  check("clear during start: the backend is told to cancel", calls.some(c => c.url.endsWith("/cancel/r1") && c.method === "POST"),
+        JSON.stringify(calls));
+  check("clear during start: nothing is polled", !calls.some(c => c.url.includes("/discover/r1")), JSON.stringify(calls));
+  check("clear during start: the page stays cleared", S.scanning === false && Object.keys(S.scan).length === 0);
+
+  // Starting a scan must not cancel a verify that is already being polled.
+  freshRun(); target("t0", "https://example.test/a", "Rect 300x250", "300x250");
+  S.groups = [{ gid: "g0", verifiable: true, platform: "Adform", url: "https://example.test/g", expected: { bn: "1" } }];
+  let timers = [], verifyPolls = 0;
+  ctx.setTimeout = (f) => { timers.push(f); return timers.length; };
+  ctx.fetch = (url, o) => {
+    const post = o && o.method === "POST";
+    if (url.endsWith("/verify") && post) return Promise.resolve(reply(200, { run_id: "v1", rejected: [] }));
+    if (url.endsWith("/discover") && post) return Promise.resolve(reply(200, { run_id: "s1", rejected: [], watch_ids: [] }));
+    if (url.endsWith("/verify/v1")) {
+      verifyPolls++;
+      return Promise.resolve(reply(200, verifyPolls < 2
+        ? { done: false, error: null, results: { g0: { status: "running" } } }
+        : { done: true, error: null, results: { g0: { status: "pass", verdict: "pass" } } }));
+    }
+    if (url.endsWith("/discover/s1")) return Promise.resolve(reply(200, { done: true, error: null, results: { t0: { status: "none" } } }));
+    return Promise.resolve(reply(404, { error: "no" }));
+  };
+  x.runVerification(); await settle();
+  check("verify: first poll is in flight", verifyPolls === 1 && S.verifying === true, String(verifyPolls));
+  x.runScan(); await settle();
+  check("scan done while a verify is running", S.scanning === false);
+  const pending = timers.splice(0); pending.forEach(f => f()); await settle();
+  check("a scan does not cancel the verify's poll: it polled again and finished",
+        verifyPolls === 2 && S.verifying === false && S.verify.g0.status === "pass",
+        `polls=${verifyPolls} verifying=${S.verifying}`);
+
+  // A poll that gives up leaves no row "running".
+  freshRun(); target("t0", "https://example.test/a", "Rect 300x250", "300x250"); target("t1", "https://example.test/b", "Rect 300x251", "300x251");
+  timers = []; let gets = 0;
+  ctx.setTimeout = (f) => { timers.push(f); return timers.length; };
+  ctx.fetch = (url, o) => {
+    if (o && o.method === "POST") return Promise.resolve(reply(200, { run_id: "s2", rejected: [], watch_ids: [] }));
+    gets++;
+    return gets === 1 ? Promise.resolve(reply(200, { done: false, error: null, results: { t0: { status: "running", elapsed_s: 3 }, t1: { status: "pending" } } }))
+                      : Promise.reject(new Error("down"));
+  };
+  x.runScan(); await settle();
+  for (let i = 0; i < 12 && timers.length; i++) { timers.splice(0).forEach(f => f()); await settle(); }
+  check("poll gave up: scan ended", S.scanning === false && !!S.scanError, `${S.scanning} ${S.scanError}`);
+  check("poll gave up: no row left running or pending", ["t0", "t1"].every(t => S.scan[t].status === "error"), JSON.stringify(S.scan));
+  x.renderScan();
+  check("poll gave up: button does not count them as running", !els.runScan.textContent.includes("running"), els.runScan.textContent);
+
+  // "I'm done clicking" on a window that has already closed is not an error.
+  freshRun(); S.scanRunId = "s3"; S.watchActive = "t0";
+  ctx.fetch = () => Promise.resolve(reply(409, { error: "that watch target is not the one running", watch_active: "t1" }));
+  x.endWatch(); await settle();
+  check("409 on done: no error left up", S.scanError === "" && S.watchActive === null, `[${S.scanError}] ${S.watchActive}`);
+  freshRun(); S.scanRunId = "s3"; S.watchActive = "t0";
+  ctx.fetch = () => Promise.resolve(reply(500, { error: "boom" }));
+  x.endWatch(); await settle();
+  check("a real error on done is still shown", S.scanError === "boom", S.scanError);
+}
+
+drive().then(() => {
+  console.log(`${passes} passed, ${fails} failed`);
+  process.exit(fails ? 1 : 0);
+}).catch(e => { console.log("FAIL: driver threw", e && e.stack || e); process.exit(1); });

@@ -217,6 +217,13 @@ class VisionMatcher:
         payload = self._m.generate(
             [{"role": "user", "parts": [{"text": prompt}, image]}])
         if not payload:
+            # A call that failed is not a model that declined. Raised so
+            # locate() files it under why["error"], and the run log says
+            # "model call failed: rate limited (HTTP 429)" rather than
+            # "no usable answer" — the two need different fixes.
+            error = getattr(self._m, "last_error", None)
+            if error:
+                raise RuntimeError(error)
             return None
         try:
             return json.loads(payload)
